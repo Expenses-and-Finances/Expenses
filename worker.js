@@ -39,11 +39,10 @@ async function plaid(env, path, body) {
 
 // Database access with the service key. Never sent to the browser.
 async function db(env, method, path, body, prefer) {
-  const headers = {
-    apikey: env.SUPABASE_SERVICE_ROLE_KEY,
-    authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
-    "content-type": "application/json",
-  };
+  const key = env.SUPABASE_SERVICE_ROLE_KEY;
+  const headers = { apikey: key, "content-type": "application/json" };
+  // Older "service_role" keys are JWTs and also go in Authorization; newer sb_secret_ keys go only in apikey.
+  if (key && key.startsWith("eyJ")) headers.authorization = `Bearer ${key}`;
   if (prefer) headers.prefer = prefer;
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     method,
