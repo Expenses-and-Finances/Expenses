@@ -3,13 +3,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-// Fake sample data only. Real transactions come later, from the database, for signed-in owner only.
-const sampleTransactions = [
-  { id: 1, date: "2026-10-28", merchant: "Sample Grocery", category: "Groceries", amount: 84.12 },
-  { id: 2, date: "2026-10-29", merchant: "Sample Streaming", category: "Subscriptions", amount: 15.99 },
-  { id: 3, date: "2026-10-30", merchant: "Sample Restaurant", category: "Dining", amount: 42.5 },
-];
-
 const wrap = { maxWidth: 480, margin: "0 auto", padding: 16 };
 
 // Loads Plaid's official Link script once, only when the button is pressed.
@@ -24,7 +17,7 @@ function loadPlaid() {
   });
 }
 
-function ConnectBank({ session }) {
+function ConnectBank({ session, onChange }) {
   const [msg, setMsg] = useState("");
   const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
 
@@ -37,10 +30,17 @@ function ConnectBank({ session }) {
       const Plaid = await loadPlaid();
       Plaid.create({
         token: data.link_token,
-        onSuccess: async (public_token) => {
-          setMsg("Finishing connection...");
-          const r = await fetch("/api/plaid/exchange", { method: "POST", headers, body: JSON.stringify({ public_token }) });
-          setMsg(r.ok ? "Connected (sandbox test). Saving transactions comes next." : "Connection failed at the last step.");
+        onSuccess: async (public_token, metadata) => {
+          setMsg("Saving connection and loading transactions...");
+          const r = await fetch("/api/plaid/exchange", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ public_token, institution: metadata?.institution?.name }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) return setMsg("Connection failed at the last step.");
+          setMsg(d.added ? `Connected. Loaded ${d.added} transactions.` : "Connected. The bank is still preparing transactions; press Refresh in a minute.");
+          onChange();
         },
         onExit: (err) => setMsg(err ? "Plaid closed with an error." : ""),
       }).open();
@@ -120,7 +120,39 @@ export default function Home() {
     );
   }
 
-  const total = sampleTransactions.reduce((sum, t) => sum + t.amount, 0);
+  return <Dashboard session={session} />;
+}
+
+const money = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+
+function Dashboard({ session }) {
+  const [txns, setTxns] = useState(null);
+  const [accounts, setAccounts] = useState({});
+  const [msg, setMsg] = useState("");
+
+  async function load() {
+    const [a, t] = await Promise.all([
+      supabase.from("accounts").select("id, name, mask"),
+      supabase.from("transactions").select("id, posted_date, merchant, amount, pending, plaid_category, account_id, is_transfer").order("posted_date", { ascending: false }).limit(300),
+    ]);
+    if (t.error) return setMsg("Could not load transactions.");
+    setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
+    setTxns(t.data);
+  }
+
+  async function refresh() {
+    setMsg("Refreshing from your banks...");
+    const r = await fetch("/api/plaid/sync", { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } });
+    const d = await r.json().catch(() => ({}));
+    setMsg(r.ok ? `Up to date. ${d.added} new, ${d.modified} changed, ${d.removed} removed.` : "Refresh failed. Try again.");
+    load();
+  }
+
+  useEffect(() => { load(); }, []);
+
+  // Spending = money out in the last 30 days, not counting transfers between your own accounts.
+  const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const spent = (txns || []).filter((t) => t.amount > 0 && !t.is_transfer && t.posted_date >= since).reduce((s, t) => s + Number(t.amount), 0);
 
   return (
     <main style={wrap}>
@@ -128,23 +160,44 @@ export default function Home() {
         <h1 style={{ fontSize: 24 }}>Expenses</h1>
         <button onClick={() => supabase.auth.signOut()} style={{ padding: "6px 10px" }}>Sign out</button>
       </div>
-      <p style={{ color: "#6b7280" }}>Sample data only. Not connected to any accounts yet.</p>
-      <ConnectBank session={session} />
 
-      <ul style={{ listStyle: "none", padding: 0 }}>
-        {sampleTransactions.map((t) => (
-          <li key={t.id} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #e5e7eb" }}>
-            <span>
-              {t.merchant}
-              <br />
-              <small style={{ color: "#6b7280" }}>{t.date} · {t.category}</small>
-            </span>
-            <strong>${t.amount.toFixed(2)}</strong>
-          </li>
-        ))}
-      </ul>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+        <ConnectBank session={session} onChange={load} />
+        <button onClick={refresh} style={{ padding: "10px 14px", fontSize: 16, margin: "12px 0" }}>Refresh</button>
+      </div>
+      {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
 
-      <p style={{ fontWeight: 600 }}>Total: ${total.toFixed(2)}</p>
+      {txns === null ? (
+        <p>Loading...</p>
+      ) : txns.length === 0 ? (
+        <p style={{ color: "#6b7280" }}>No transactions yet. Connect a bank to get started.</p>
+      ) : (
+        <>
+          <p style={{ fontWeight: 600 }}>Spent in the last 30 days: {money(spent)}</p>
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {txns.map((t) => {
+              const acct = accounts[t.account_id];
+              return (
+                <li key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                  <span>
+                    {t.merchant || "Unknown"}
+                    {t.pending && <small style={{ color: "#b45309" }}> · pending</small>}
+                    <br />
+                    <small style={{ color: "#6b7280" }}>
+                      {t.posted_date}
+                      {acct ? ` · ${acct.name}${acct.mask ? " ••" + acct.mask : ""}` : ""}
+                      {t.plaid_category ? ` · ${t.plaid_category.replace(/_/g, " ").toLowerCase()}` : ""}
+                    </small>
+                  </span>
+                  <strong style={{ color: t.amount < 0 ? "#15803d" : undefined, whiteSpace: "nowrap" }}>
+                    {t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}
+                  </strong>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </main>
   );
 }
