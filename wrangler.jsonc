@@ -1,0 +1,8 @@
+{
+  // Serves the static site built into the "out" folder.
+  "name": "expenses",
+  "compatibility_date": "2026-01-01",
+  "assets": {
+    "directory": "./out"
+  }
+}
