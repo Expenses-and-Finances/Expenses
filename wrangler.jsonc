@@ -1,8 +1,11 @@
 {
-  // Serves the static site built into the "out" folder.
+  // Serves the static site from "out" and runs worker.js for /api/* routes.
   "name": "expenses",
+  "main": "worker.js",
   "compatibility_date": "2026-01-01",
   "assets": {
-    "directory": "./out"
+    "directory": "./out",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   }
 }
