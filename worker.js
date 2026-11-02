@@ -56,6 +56,15 @@ async function db(env, method, path, body, prefer) {
 
 const UPSERT = "resolution=merge-duplicates,return=representation";
 
+// Money moving between your own accounts: transfers and credit card payments.
+// Mortgage and other loan payments still count as spending.
+const TRANSFER_PRIMARY = ["TRANSFER_IN", "TRANSFER_OUT"];
+const TRANSFER_DETAILED = ["LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"];
+function isTransfer(t) {
+  const c = t.personal_finance_category || {};
+  return TRANSFER_PRIMARY.includes(c.primary) || TRANSFER_DETAILED.includes(c.detailed);
+}
+
 // Pull new, changed and removed transactions for one bank connection.
 async function syncItem(env, item) {
   let cursor = item.sync_cursor || undefined;
@@ -84,8 +93,10 @@ async function syncItem(env, item) {
     for (const r of rows) accountIds[r.plaid_account_id] = r.id;
   }
 
-  // Plaid amounts: positive = money out, negative = money in. Category, tags and transfer flags set in the app are left alone.
+  // Plaid amounts: positive = money out, negative = money in. Category, tags and your manual transfer choice are left alone.
   const changed = added.concat(modified).map((t) => ({
+    auto_transfer: isTransfer(t),
+    plaid_category_detailed: t.personal_finance_category?.detailed || null,
     plaid_transaction_id: t.transaction_id,
     account_id: accountIds[t.account_id] || null,
     posted_date: t.date,
