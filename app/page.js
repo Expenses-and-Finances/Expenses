@@ -133,7 +133,7 @@ function Dashboard({ session }) {
   async function load() {
     const [a, t] = await Promise.all([
       supabase.from("accounts").select("id, name, mask"),
-      supabase.from("transactions").select("id, posted_date, merchant, amount, pending, plaid_category, account_id, is_transfer").order("posted_date", { ascending: false }).limit(300),
+      supabase.from("transactions").select("id, posted_date, merchant, amount, pending, plaid_category, account_id, is_transfer, auto_transfer").order("posted_date", { ascending: false }).limit(300),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
     setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
@@ -150,9 +150,23 @@ function Dashboard({ session }) {
 
   useEffect(() => { load(); }, []);
 
+  // Your manual choice wins; otherwise use the automatic label from the bank sync.
+  const transfer = (t) => (t.is_transfer ?? t.auto_transfer) === true;
+
+  async function toggleTransfer(t) {
+    const next = !transfer(t);
+    // Setting it back to match the automatic label clears the manual choice.
+    const value = next === Boolean(t.auto_transfer) ? null : next;
+    setTxns((list) => list.map((x) => (x.id === t.id ? { ...x, is_transfer: value } : x)));
+    const { error } = await supabase.from("transactions").update({ is_transfer: value }).eq("id", t.id);
+    if (error) { setMsg("Could not save that change."); load(); }
+  }
+
   // Spending = money out in the last 30 days, not counting transfers between your own accounts.
   const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
-  const spent = (txns || []).filter((t) => t.amount > 0 && !t.is_transfer && t.posted_date >= since).reduce((s, t) => s + Number(t.amount), 0);
+  const recent = (txns || []).filter((t) => t.posted_date >= since && t.amount > 0);
+  const spent = recent.filter((t) => !transfer(t)).reduce((s, t) => s + Number(t.amount), 0);
+  const moved = recent.filter(transfer).reduce((s, t) => s + Number(t.amount), 0);
 
   return (
     <main style={wrap}>
@@ -173,12 +187,14 @@ function Dashboard({ session }) {
         <p style={{ color: "#6b7280" }}>No transactions yet. Connect a bank to get started.</p>
       ) : (
         <>
-          <p style={{ fontWeight: 600 }}>Spent in the last 30 days: {money(spent)}</p>
+          <p style={{ fontWeight: 600, marginBottom: 2 }}>Spent in the last 30 days: {money(spent)}</p>
+          <p style={{ color: "#6b7280", marginTop: 0 }}><small>Not counted: {money(moved)} moved between your accounts</small></p>
           <ul style={{ listStyle: "none", padding: 0 }}>
             {txns.map((t) => {
               const acct = accounts[t.account_id];
+              const isT = transfer(t);
               return (
-                <li key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                <li key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e5e7eb", opacity: isT ? 0.55 : 1 }}>
                   <span>
                     {t.merchant || "Unknown"}
                     {t.pending && <small style={{ color: "#b45309" }}> · pending</small>}
@@ -189,9 +205,18 @@ function Dashboard({ session }) {
                       {t.plaid_category ? ` · ${t.plaid_category.replace(/_/g, " ").toLowerCase()}` : ""}
                     </small>
                   </span>
-                  <strong style={{ color: t.amount < 0 ? "#15803d" : undefined, whiteSpace: "nowrap" }}>
-                    {t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}
-                  </strong>
+                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <strong style={{ color: t.amount < 0 ? "#15803d" : undefined }}>
+                      {t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}
+                    </strong>
+                    <br />
+                    <button
+                      onClick={() => toggleTransfer(t)}
+                      style={{ marginTop: 4, padding: "2px 8px", fontSize: 12, border: "1px solid #d1d5db", borderRadius: 12, background: isT ? "#e5e7eb" : "#fff", color: "#374151" }}
+                    >
+                      {isT ? "Transfer ✓" : "Transfer?"}
+                    </button>
+                  </span>
                 </li>
               );
             })}
