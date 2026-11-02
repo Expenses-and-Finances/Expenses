@@ -3,6 +3,8 @@
   "name": "expenses",
   "main": "worker.js",
   "compatibility_date": "2026-01-01",
+  // Keep variables set in the Cloudflare dashboard (they stay out of this public repo).
+  "keep_vars": true,
   "assets": {
     "directory": "./out",
     "binding": "ASSETS",
