@@ -12,6 +12,51 @@ const sampleTransactions = [
 
 const wrap = { maxWidth: 480, margin: "0 auto", padding: 16 };
 
+// Loads Plaid's official Link script once, only when the button is pressed.
+function loadPlaid() {
+  if (window.Plaid) return Promise.resolve(window.Plaid);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+    s.onload = () => resolve(window.Plaid);
+    s.onerror = () => reject(new Error("Could not load Plaid"));
+    document.head.appendChild(s);
+  });
+}
+
+function ConnectBank({ session }) {
+  const [msg, setMsg] = useState("");
+  const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
+
+  async function connect() {
+    try {
+      setMsg("Opening Plaid...");
+      const res = await fetch("/api/plaid/link-token", { method: "POST", headers });
+      const data = await res.json();
+      if (!res.ok) return setMsg(`Could not start: ${data.error || res.status}`);
+      const Plaid = await loadPlaid();
+      Plaid.create({
+        token: data.link_token,
+        onSuccess: async (public_token) => {
+          setMsg("Finishing connection...");
+          const r = await fetch("/api/plaid/exchange", { method: "POST", headers, body: JSON.stringify({ public_token }) });
+          setMsg(r.ok ? "Connected (sandbox test). Saving transactions comes next." : "Connection failed at the last step.");
+        },
+        onExit: (err) => setMsg(err ? "Plaid closed with an error." : ""),
+      }).open();
+    } catch {
+      setMsg("Something went wrong. Try again.");
+    }
+  }
+
+  return (
+    <div style={{ margin: "12px 0" }}>
+      <button onClick={connect} style={{ padding: "10px 14px", fontSize: 16 }}>Connect bank</button>
+      {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
+    </div>
+  );
+}
+
 export default function Home() {
   const [session, setSession] = useState(null);
   const [checking, setChecking] = useState(true);
@@ -84,6 +129,7 @@ export default function Home() {
         <button onClick={() => supabase.auth.signOut()} style={{ padding: "6px 10px" }}>Sign out</button>
       </div>
       <p style={{ color: "#6b7280" }}>Sample data only. Not connected to any accounts yet.</p>
+      <ConnectBank session={session} />
 
       <ul style={{ listStyle: "none", padding: 0 }}>
         {sampleTransactions.map((t) => (
