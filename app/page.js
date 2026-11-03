@@ -733,15 +733,16 @@ function Dashboard({ session }) {
                     )}
                   </span>
                   <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    <strong style={{ color: t.amount < 0 ? "#15803d" : undefined }}>
+                    <strong style={{ color: isT ? "#9ca3af" : t.amount < 0 ? "#15803d" : undefined, textDecoration: isT ? "line-through" : undefined }}>
                       {t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}
                     </strong>
                     <br />
                     <button
                       onClick={() => toggleTransfer(t)}
-                      style={{ marginTop: 4, padding: "2px 8px", fontSize: 12, border: "1px solid #d1d5db", borderRadius: 12, background: isT ? "#e5e7eb" : "#fff", color: "#374151" }}
+                      title={isT ? "Tap to count this again" : "Tap if this is money moving between your own accounts"}
+                      style={{ marginTop: 4, padding: "2px 8px", fontSize: 11, border: isT ? "1px solid #d1d5db" : "1px dashed #d1d5db", borderRadius: 12, background: isT ? "#e5e7eb" : "#fff", color: isT ? "#374151" : "#9ca3af" }}
                     >
-                      {isT ? "Transfer ✓" : "Transfer?"}
+                      {isT ? "↔ Transfer, not counted" : "mark as transfer"}
                     </button>
                   </span>
                 </li>
