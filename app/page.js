@@ -283,7 +283,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
                 {itemId && <ReconnectBank session={session} item={{ item_id: itemId }} onDone={onChange} />}
               </div>
               {list.sort((x, y) => (order[x.type] || 9) - (order[y.type] || 9)).map((a) => {
-                const owe = a.type === "loan" || a.type === "credit";
+                const owe = (a.type === "loan" || a.type === "credit") && Number(a.current_balance) > 0;
                 const e = estimateLoan(a, txns);
                 return (
                   <div key={a.id} className="acct">
