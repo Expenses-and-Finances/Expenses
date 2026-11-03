@@ -17,6 +17,40 @@ function loadPlaid() {
   });
 }
 
+// Reconnect an existing bank (Plaid update mode), then reload its transactions.
+function ReconnectBank({ session, item, onDone }) {
+  const [msg, setMsg] = useState("");
+  const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
+  async function go() {
+    try {
+      setMsg("Opening Plaid...");
+      const res = await fetch("/api/plaid/link-token", { method: "POST", headers, body: JSON.stringify({ item_id: item.item_id }) });
+      const data = await res.json();
+      if (!res.ok) return setMsg("Could not start the reconnect.");
+      const Plaid = await loadPlaid();
+      Plaid.create({
+        token: data.link_token,
+        onSuccess: async () => {
+          setMsg("Reconnected. Reloading transactions...");
+          const r = await fetch("/api/plaid/sync", { method: "POST", headers, body: JSON.stringify({ item_id: item.item_id }) });
+          const d = await r.json().catch(() => ({}));
+          setMsg(r.ok ? `Done. ${d.added || 0} new, ${d.modified || 0} updated.` : "Reconnected, but loading failed. Press Refresh.");
+          onDone();
+        },
+        onExit: (err) => setMsg(err ? "Plaid closed with an error." : ""),
+      }).open();
+    } catch {
+      setMsg("Something went wrong. Try again.");
+    }
+  }
+  return (
+    <span>
+      <button onClick={go} style={{ fontSize: 12, padding: "2px 8px", marginLeft: 6 }}>Reconnect</button>
+      {msg && <small style={{ color: "#6b7280", marginLeft: 6 }}>{msg}</small>}
+    </span>
+  );
+}
+
 function ConnectBank({ session, onChange, profile = "primary", label = "Connect bank" }) {
   const [msg, setMsg] = useState("");
   const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
@@ -231,7 +265,7 @@ async function loadAllTransactions() {
 
 // Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
 // Loans and credit cards show what you owe.
-function AccountsList({ accounts, txns, crypto = [] }) {
+function AccountsList({ accounts, txns, crypto = [], session, onChange }) {
   const banks = {};
   for (const a of accounts) (banks[a.institution || "Other"] = banks[a.institution || "Other"] || []).push(a);
   const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
@@ -241,6 +275,18 @@ function AccountsList({ accounts, txns, crypto = [] }) {
       {Object.entries(banks).sort().map(([bank, list]) => (
         <div key={bank} style={{ padding: "6px 0" }}>
           <strong>{bank}</strong> <small style={{ color: "#6b7280" }}>· {list.length} accounts</small>
+          {(() => {
+            const ids = new Set(list.map((a) => a.id));
+            const last = txns.filter((t) => ids.has(t.account_id)).reduce((m, t) => (t.posted_date > m ? t.posted_date : m), "");
+            const stale = last && (Date.now() - new Date(last).getTime()) / 864e5 > 14;
+            const itemId = list.find((a) => a.plaid_item_id)?.plaid_item_id;
+            return (
+              <>
+                {last && <small style={{ color: stale ? "#b45309" : "#6b7280" }}> · latest {last}{stale ? " ⚠️" : ""}</small>}
+                {itemId && <ReconnectBank session={session} item={{ item_id: itemId }} onDone={onChange} />}
+              </>
+            );
+          })()}
           {list.sort((x, y) => (order[x.type] || 9) - (order[y.type] || 9)).map((a) => (
             <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0", borderBottom: "1px solid #f3f4f6", fontSize: 14 }}>
               <span>
@@ -308,11 +354,11 @@ function Dashboard({ session }) {
 
   async function load() {
     const [a, c, p, cr, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
+      supabase.from("accounts").select("id, name, mask, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
-      supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction").order("created_at"),
+      supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction, label").order("created_at"),
       loadAllTransactions(),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
@@ -396,6 +442,22 @@ function Dashboard({ session }) {
     save(t, { category_id: id === autoCat(t)?.id ? null : id });
   }
 
+  // After a fix, offer to remember it for every purchase from the same store.
+  const [offer, setOffer] = useState(null); // { txnId, merchant, catId }
+  async function rememberForMerchant() {
+    const { merchant, catId } = offer;
+    const pattern = "%" + merchant.replace(/[%_]/g, "") + "%";
+    const { error } = await supabase.from("rules").insert({ pattern, category_id: catId, direction: "out", note: "Set from the app: " + merchant });
+    setOffer(null);
+    if (error) return setMsg("Could not save that rule.");
+    // The rule now covers this purchase too, so the one-off choice is no longer needed.
+    const re = likeToRegex(pattern);
+    const same = (txns || []).filter((x) => x.category_id === catId && re.test(x.merchant || ""));
+    for (const x of same) await supabase.from("transactions").update({ category_id: null }).eq("id", x.id);
+    setMsg(`Got it: everything from ${merchant} now goes to ${cats.find((c) => c.id === catId)?.name}.`);
+    load();
+  }
+
   const [from, to] = PERIODS[period].range();
   const inPeriod = (txns || []).filter((t) => t.posted_date >= from && t.posted_date <= to);
   const real = inPeriod.filter((t) => !transfer(t));
@@ -419,11 +481,12 @@ function Dashboard({ session }) {
 
   let shown = inPeriod;
   const inCat = filterCat ? spending.filter((t) => catOf(t)?.id === filterCat) : [];
-  const subs = groupBy(inCat, subLabel);
+  const subOf = (t) => ruleFor(t)?.label || subLabel(t);
+  const subs = groupBy(inCat, subOf);
   const merchants = groupBy(inCat, merchantKey);
   if (filterCat) {
     shown = inCat;
-    if (drill?.kind === "sub") shown = inCat.filter((t) => subLabel(t) === drill.key);
+    if (drill?.kind === "sub") shown = inCat.filter((t) => subOf(t) === drill.key);
     if (drill?.kind === "merchant") shown = inCat.filter((t) => merchantKey(t) === drill.key);
   }
   else if (filterProp === "household") shown = household;
@@ -431,15 +494,46 @@ function Dashboard({ session }) {
   const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); setDrill(null); setAllMerchants(false); };
   const toggleDrill = (kind, key) => setDrill(drill?.kind === kind && drill.key === key ? null : { kind, key });
   const catTotal = inCat.reduce((s, t) => s + Number(t.amount), 0) || 1;
+  const lines = (list) => (
+    <div style={{ margin: "2px 0 8px 10px" }}>
+      {list.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
+        <div key={t.id} style={{ padding: "6px 4px", borderBottom: "1px dashed #e5e7eb", fontSize: 13 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+            <span>{t.posted_date.slice(5)} · {t.merchant}{accounts[t.account_id]?.mask ? <small style={{ color: "#6b7280" }}> ••{accounts[t.account_id].mask}</small> : null}</span>
+            <strong style={{ whiteSpace: "nowrap" }}>{money(Number(t.amount))}</strong>
+          </div>
+          <label style={{ fontSize: 12, color: "#6b7280" }}>
+            Wrong section? Move to{" "}
+            <select
+              value={catOf(t)?.id || ""}
+              onChange={(e) => { setCategory(t, e.target.value); setOffer({ txnId: t.id, merchant: merchantKey(t), catId: e.target.value }); }}
+              style={{ fontSize: 12, padding: "1px 2px", maxWidth: 170 }}
+            >
+              {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+          {offer?.txnId === t.id && (
+            <div style={{ marginTop: 4, fontSize: 12, background: "#ecfdf5", padding: "4px 6px", borderRadius: 4 }}>
+              Moved. Do the same for every purchase from <b>{offer.merchant}</b>?{" "}
+              <button onClick={rememberForMerchant} style={{ fontSize: 12, padding: "1px 6px" }}>Yes, always</button>{" "}
+              <button onClick={() => setOffer(null)} style={{ fontSize: 12, padding: "1px 6px" }}>Just this one</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
   const row = (kind, g) => (
+    <div key={kind + g.key}>
     <button
-      key={kind + g.key}
       onClick={() => toggleDrill(kind, g.key)}
       style={{ display: "flex", justifyContent: "space-between", width: "100%", gap: 8, textAlign: "left", background: drill?.kind === kind && drill.key === g.key ? "#e0e7ff" : "transparent", border: "none", borderBottom: "1px solid #eef2ff", padding: "5px 4px", cursor: "pointer", fontSize: 14 }}
     >
       <span>{g.key} <small style={{ color: "#6b7280" }}>×{g.count}</small></span>
-      <span style={{ whiteSpace: "nowrap" }}>{money(g.total)} <small style={{ color: "#6b7280" }}>{Math.round((g.total / catTotal) * 100)}%</small></span>
+      <span style={{ whiteSpace: "nowrap" }}>{money(g.total)} <small style={{ color: "#6b7280" }}>{Math.round((g.total / catTotal) * 100)}%</small> {drill?.kind === kind && drill.key === g.key ? "▾" : "▸"}</span>
     </button>
+    {drill?.kind === kind && drill.key === g.key && lines(shown)}
+    </div>
   );
   const details = filterCat && (
     <div style={{ margin: "4px 0 10px 12px", padding: "6px 8px", borderLeft: "3px solid #c7d2fe" }}>
@@ -476,7 +570,7 @@ function Dashboard({ session }) {
       <button onClick={() => setShowAccounts(!showAccounts)} style={{ padding: "6px 10px", marginBottom: 8 }}>
         {showAccounts ? "Hide accounts" : `Connected accounts (${Object.keys(accounts).length})`}
       </button>
-      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} />}
+      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} />}
       {Object.values(accounts).some((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6) && (
         <p style={{ background: "#fef3c7", padding: "8px 10px", borderRadius: 6, fontSize: 14 }}>
           📄 Time for a new statement: {Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6).map((a) => a.name).join(", ")}
