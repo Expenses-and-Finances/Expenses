@@ -269,6 +269,40 @@ export default {
           return json(await syncItem(env, item));
         }
 
+        if (url.pathname === "/api/plaid/status") {
+          // Read-only health check: when Plaid last pulled from each bank, and any bank-side problem.
+          const items = await db(env, "GET", "plaid_items?select=item_id,access_token,institution,plaid_profile&order=created_at");
+          const out = [];
+          for (const it of items.filter((i) => !body.item_id || i.item_id === body.item_id)) {
+            try {
+              const prof = it.plaid_profile || "primary";
+              const g = await plaid(env, "/item/get", { access_token: await decryptToken(env, it.access_token) }, prof);
+              const row = {
+                institution: it.institution,
+                item_error: g.item?.error ? `${g.item.error.error_code}: ${g.item.error.error_message}` : null,
+                last_successful_update: g.status?.transactions?.last_successful_update || null,
+                last_failed_update: g.status?.transactions?.last_failed_update || null,
+                consent_expires: g.item?.consent_expiration_time || null,
+              };
+              if (g.item?.institution_id) {
+                try {
+                  const ins = await plaid(env, "/institutions/get_by_id", { institution_id: g.item.institution_id, country_codes: ["US"], options: { include_status: true } }, prof);
+                  const st = ins.institution?.status || {};
+                  row.bank_feed = {
+                    transactions: st.transactions_updates?.status || null,
+                    transactions_success_rate: st.transactions_updates?.breakdown?.success ?? null,
+                    login: st.item_logins?.status || null,
+                  };
+                } catch { row.bank_feed = null; }
+              }
+              out.push(row);
+            } catch (e) {
+              out.push({ institution: it.institution, check_failed: true });
+            }
+          }
+          return json({ items: out });
+        }
+
         if (url.pathname === "/api/plaid/match") {
           await matchProperties(env);
           return json({ ok: true });
