@@ -25,12 +25,21 @@ async function requireOwner(request, env) {
   return user;
 }
 
-async function plaid(env, path, body) {
+// Two sets of Plaid keys: "primary" (yours) and "wife" (her own Plaid account, set as PLAID_CLIENT_ID_2 / PLAID_SECRET_2).
+function plaidKeys(env, profile) {
+  if (profile === "wife") {
+    if (!env.PLAID_CLIENT_ID_2 || !env.PLAID_SECRET_2) throw new Error("wife's Plaid keys are not set up");
+    return { client_id: env.PLAID_CLIENT_ID_2, secret: env.PLAID_SECRET_2 };
+  }
+  return { client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET };
+}
+
+async function plaid(env, path, body, profile = "primary") {
   const base = PLAID_BASES[env.PLAID_ENV] || PLAID_BASES.sandbox;
   const res = await fetch(base + path, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET, ...body }),
+    body: JSON.stringify({ ...plaidKeys(env, profile), ...body }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(`plaid ${path}: ${data.error_code || res.status}`);
@@ -97,6 +106,7 @@ function isTransfer(t) {
 
 // Pull new, changed and removed transactions for one bank connection.
 async function syncItem(env, item) {
+  const profile = item.plaid_profile || "primary";
   const accessToken = await decryptToken(env, item.access_token);
   if (!item.access_token.startsWith(ENC_PREFIX)) {
     await db(env, "PATCH", `plaid_items?item_id=eq.${encodeURIComponent(item.item_id)}`, { access_token: await encryptToken(env, accessToken) });
@@ -104,7 +114,7 @@ async function syncItem(env, item) {
   let cursor = item.sync_cursor || undefined;
   let added = [], modified = [], removed = [];
   for (let page = 0; page < 10; page++) {
-    const data = await plaid(env, "/transactions/sync", { access_token: accessToken, cursor, count: 500 });
+    const data = await plaid(env, "/transactions/sync", { access_token: accessToken, cursor, count: 500 }, profile);
     added = added.concat(data.added);
     modified = modified.concat(data.modified);
     removed = removed.concat(data.removed);
@@ -113,12 +123,13 @@ async function syncItem(env, item) {
   }
 
   // Ask Plaid for every account on this login (checking, savings, loans, mortgages...), not just the ones in this batch.
-  const { accounts } = await plaid(env, "/accounts/get", { access_token: accessToken });
+  const { accounts } = await plaid(env, "/accounts/get", { access_token: accessToken }, profile);
   const accountIds = {};
   if (accounts.length) {
     const rows = await db(env, "POST", "accounts?on_conflict=plaid_account_id", accounts.map((a) => ({
       plaid_account_id: a.account_id,
       plaid_item_id: item.item_id,
+      owner_person: profile === "wife" ? "Wife" : "You",
       name: a.official_name || a.name,
       institution: item.institution,
       mask: a.mask,
@@ -159,34 +170,49 @@ async function syncItem(env, item) {
   return { added: added.length, modified: modified.length, removed: gone.length };
 }
 
+// Value Coinbase holdings with Coinbase's public exchange rates (one request, no login).
+// Coins Coinbase no longer prices keep their last known price.
+async function updateCrypto(env) {
+  const holdings = await db(env, "GET", "crypto_holdings?select=id,symbol,quantity,last_price");
+  if (!holdings.length) return { coins: 0 };
+  const res = await fetch("https://api.coinbase.com/v2/exchange-rates?currency=USD");
+  if (!res.ok) throw new Error(`coinbase prices: ${res.status}`);
+  const rates = (await res.json()).data?.rates || {};
+  const now = new Date().toISOString();
+  let total = 0, priced = 0;
+  const rows = holdings.map((h) => {
+    const r = Number(rates[h.symbol]);
+    const price = h.symbol === "USDC" ? 1 : r > 0 ? 1 / r : h.last_price == null ? null : Number(h.last_price);
+    if (r > 0 || h.symbol === "USDC") priced++;
+    const value = price == null ? null : Math.round(Number(h.quantity) * price * 100) / 100;
+    total += value || 0;
+    return { symbol: h.symbol, quantity: h.quantity, last_price: price, last_value: value, price_updated_at: r > 0 ? now : undefined };
+  });
+  await db(env, "POST", "crypto_holdings?on_conflict=symbol", rows, "resolution=merge-duplicates,return=minimal");
+  await db(env, "PATCH", "accounts?institution=eq.Coinbase%20(holdings)", {
+    current_balance: Math.round(total * 100) / 100, balance_updated_at: now,
+  });
+  return { coins: holdings.length, priced, total: Math.round(total * 100) / 100 };
+}
+
 // Link loan payments from checking to the property whose loan they paid (logic lives in the database).
 async function matchProperties(env) {
   await db(env, "POST", "rpc/match_property_payments", {});
-}
-
-async function syncAll(env) {
-  const items = await db(env, "GET", "plaid_items?select=item_id,access_token,institution,sync_cursor");
-  const totals = { connections: items.length, added: 0, modified: 0, removed: 0 };
-  for (const item of items) {
-    const r = await syncItem(env, item);
-    totals.added += r.added;
-    totals.modified += r.modified;
-    totals.removed += r.removed;
-  }
-  await matchProperties(env);
-  return totals;
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname.startsWith("/api/plaid/")) {
+    if (url.pathname.startsWith("/api/")) {
       if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
       const user = await requireOwner(request, env);
       if (!user) return json({ error: "not signed in as owner" }, 401);
 
       try {
+        const body = request.headers.get("content-type")?.includes("json") ? await request.json().catch(() => ({})) : {};
+        const profile = body.profile === "wife" ? "wife" : "primary";
+
         if (url.pathname === "/api/plaid/link-token") {
           const data = await plaid(env, "/link/token/create", {
             client_name: "Expenses",
@@ -195,26 +221,45 @@ export default {
             user: { client_user_id: user.id },
             products: ["transactions"],
             transactions: { days_requested: 730 },
-          });
+          }, profile);
           return json({ link_token: data.link_token });
         }
 
         if (url.pathname === "/api/plaid/exchange") {
-          const { public_token, institution } = await request.json();
+          const { public_token, institution } = body;
           if (!public_token) return json({ error: "missing public_token" }, 400);
-          const data = await plaid(env, "/item/public_token/exchange", { public_token });
+          const data = await plaid(env, "/item/public_token/exchange", { public_token }, profile);
           const [item] = await db(env, "POST", "plaid_items?on_conflict=item_id", [{
             item_id: data.item_id,
             access_token: await encryptToken(env, data.access_token),
             institution: typeof institution === "string" ? institution.slice(0, 100) : null,
+            plaid_profile: profile,
           }], UPSERT);
           const result = await syncItem(env, item);
           await matchProperties(env);
           return json({ connected: true, ...result });
         }
 
+        // Bank list for Refresh (no tokens). The page syncs one bank per request to stay within Cloudflare's limits.
+        if (url.pathname === "/api/plaid/items") {
+          const items = await db(env, "GET", "plaid_items?select=item_id,institution&order=created_at");
+          return json({ items });
+        }
+
         if (url.pathname === "/api/plaid/sync") {
-          return json(await syncAll(env));
+          if (!body.item_id) return json({ error: "missing item_id" }, 400);
+          const [item] = await db(env, "GET", `plaid_items?select=item_id,access_token,institution,sync_cursor,plaid_profile&item_id=eq.${encodeURIComponent(body.item_id)}`);
+          if (!item) return json({ error: "not found" }, 404);
+          return json(await syncItem(env, item));
+        }
+
+        if (url.pathname === "/api/plaid/match") {
+          await matchProperties(env);
+          return json({ ok: true });
+        }
+
+        if (url.pathname === "/api/crypto/update") {
+          return json(await updateCrypto(env));
         }
       } catch (e) {
         // Log details on the server only; the browser gets a generic message.
@@ -226,5 +271,10 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
+  },
+
+  // Runs on the schedule in wrangler.jsonc (1st of each month): refresh Coinbase prices.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(updateCrypto(env).catch((e) => console.error(e.message)));
   },
 };

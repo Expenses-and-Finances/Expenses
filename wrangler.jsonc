@@ -5,6 +5,8 @@
   "compatibility_date": "2026-01-01",
   // Keep variables set in the Cloudflare dashboard (they stay out of this public repo).
   "keep_vars": true,
+  // 1st of every month, 17:17 UTC: refresh Coinbase prices.
+  "triggers": { "crons": ["17 17 1 * *"] },
   "assets": {
     "directory": "./out",
     "binding": "ASSETS",
