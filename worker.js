@@ -124,6 +124,10 @@ async function syncItem(env, item) {
       mask: a.mask,
       type: a.type,
       subtype: a.subtype,
+      current_balance: a.balances?.current ?? null,
+      available_balance: a.balances?.available ?? null,
+      currency: a.balances?.iso_currency_code || a.balances?.unofficial_currency_code || null,
+      balance_updated_at: new Date().toISOString(),
     })), UPSERT);
     for (const r of rows) accountIds[r.plaid_account_id] = r.id;
   }
