@@ -134,27 +134,41 @@ const PERIODS = {
   year: { label: "This year", range: () => { const n = new Date(); return [`${n.getFullYear()}-01-01`, day(n)]; } },
 };
 
+// The database returns at most 1,000 rows per request, so read transactions in pages.
+async function loadAllTransactions() {
+  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id";
+  let all = [];
+  for (let from = 0; from < 50000; from += 1000) {
+    const { data, error } = await supabase.from("transactions").select(cols)
+      .order("posted_date", { ascending: false }).order("id").range(from, from + 999);
+    if (error) return { data: null, error };
+    all = all.concat(data);
+    if (data.length < 1000) break;
+  }
+  return { data: all, error: null };
+}
+
 function Dashboard({ session }) {
   const [txns, setTxns] = useState(null);
   const [accounts, setAccounts] = useState({});
   const [cats, setCats] = useState([]);
+  const [props, setProps] = useState([]);
+  const [filterProp, setFilterProp] = useState(null); // null = all, "household", or a property id
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
   const [msg, setMsg] = useState("");
 
   async function load() {
-    const [a, c, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask"),
+    const [a, c, p, t] = await Promise.all([
+      supabase.from("accounts").select("id, name, mask, property_id"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
-      supabase
-        .from("transactions")
-        .select("id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer")
-        .order("posted_date", { ascending: false })
-        .limit(1000),
+      supabase.from("properties").select("id, name, sort").order("sort"),
+      loadAllTransactions(),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
     setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
     setCats(c.data || []);
+    setProps(p.data || []);
     setTxns(t.data);
   }
 
@@ -178,6 +192,14 @@ function Dashboard({ session }) {
   const autoCat = (t) => byCode[t.plaid_category_detailed] || byCode[t.plaid_category] || other;
   const catOf = (t) => cats.find((c) => c.id === t.category_id) || autoCat(t);
 
+  // Belongs to: your manual choice, else a matched loan payment, else the account's property, else Household (null).
+  // "Household" is a real choice so a property item can be moved back to it.
+  const householdId = props.find((p) => p.name === "Household")?.id;
+  const autoProp = (t) => t.auto_property_id || accounts[t.account_id]?.property_id || null;
+  const rawProp = (t) => t.property_id || autoProp(t);
+  const propOf = (t) => { const p = rawProp(t); return p === householdId ? null : p; };
+  const realProps = props.filter((p) => p.id !== householdId);
+
   async function save(t, changes) {
     setTxns((list) => list.map((x) => (x.id === t.id ? { ...x, ...changes } : x)));
     const { error } = await supabase.from("transactions").update(changes).eq("id", t.id);
@@ -190,6 +212,12 @@ function Dashboard({ session }) {
     save(t, { is_transfer: next === Boolean(t.auto_transfer) ? null : next });
   }
 
+  function setProperty(t, id) {
+    const auto = autoProp(t) || householdId;
+    // Choosing the automatic option clears the manual choice, so future matching still applies.
+    save(t, { property_id: id === auto ? null : id });
+  }
+
   function setCategory(t, id) {
     // Picking the automatic category clears the manual choice, so future label fixes still apply.
     save(t, { category_id: id === autoCat(t)?.id ? null : id });
@@ -197,16 +225,30 @@ function Dashboard({ session }) {
 
   const [from, to] = PERIODS[period].range();
   const inPeriod = (txns || []).filter((t) => t.posted_date >= from && t.posted_date <= to);
-  const spending = inPeriod.filter((t) => t.amount > 0 && !transfer(t));
+  const real = inPeriod.filter((t) => !transfer(t));
+  const household = real.filter((t) => !propOf(t));
+  const spending = household.filter((t) => t.amount > 0);
   const spent = spending.reduce((s, t) => s + Number(t.amount), 0);
   const moved = inPeriod.filter((t) => t.amount > 0 && transfer(t)).reduce((s, t) => s + Number(t.amount), 0);
+
+  // Each property: costs (money out), income (money in, e.g. rent), and net.
+  const propRows = realProps.map((p) => {
+    const items = real.filter((t) => propOf(t) === p.id);
+    const costs = items.filter((t) => t.amount > 0).reduce((s, t) => s + Number(t.amount), 0);
+    const income = items.filter((t) => t.amount < 0).reduce((s, t) => s - Number(t.amount), 0);
+    return { ...p, costs, income, net: income - costs, count: items.length };
+  });
 
   const totals = {};
   for (const t of spending) { const c = catOf(t); if (c) totals[c.id] = (totals[c.id] || 0) + Number(t.amount); }
   const breakdown = cats.filter((c) => totals[c.id]).map((c) => ({ ...c, total: totals[c.id] })).sort((x, y) => y.total - x.total);
   const top = breakdown[0]?.total || 1;
 
-  const shown = filterCat ? inPeriod.filter((t) => !transfer(t) && t.amount > 0 && catOf(t)?.id === filterCat) : inPeriod;
+  let shown = inPeriod;
+  if (filterCat) shown = spending.filter((t) => catOf(t)?.id === filterCat);
+  else if (filterProp === "household") shown = household;
+  else if (filterProp) shown = real.filter((t) => propOf(t) === filterProp);
+  const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); };
 
   return (
     <main style={wrap}>
@@ -227,18 +269,20 @@ function Dashboard({ session }) {
         <p style={{ color: "#6b7280" }}>No transactions yet. Connect a bank to get started.</p>
       ) : (
         <>
-          <select value={period} onChange={(e) => { setPeriod(e.target.value); setFilterCat(null); }} style={{ padding: 8, fontSize: 16, marginBottom: 8 }}>
+          <select value={period} onChange={(e) => { setPeriod(e.target.value); pick(null, null); }} style={{ padding: 8, fontSize: 16, marginBottom: 8 }}>
             {Object.entries(PERIODS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </select>
 
-          <p style={{ fontSize: 20, fontWeight: 700, margin: "4px 0 2px" }}>Spent: {money(spent)}</p>
+          <p style={{ fontSize: 20, fontWeight: 700, margin: "4px 0 2px", cursor: "pointer" }} onClick={() => pick(null, filterProp === "household" ? null : "household")}>
+            Household spent: {money(spent)}
+          </p>
           <p style={{ color: "#6b7280", marginTop: 0 }}><small>Not counted: {money(moved)} moved between your accounts</small></p>
 
           <section style={{ margin: "12px 0 20px" }}>
             {breakdown.map((c) => (
               <button
                 key={c.id}
-                onClick={() => setFilterCat(filterCat === c.id ? null : c.id)}
+                onClick={() => pick(filterCat === c.id ? null : c.id, null)}
                 style={{ display: "block", width: "100%", textAlign: "left", background: filterCat === c.id ? "#eef2ff" : "transparent", border: "none", padding: "6px 4px", cursor: "pointer", borderRadius: 6 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15 }}>
@@ -252,10 +296,29 @@ function Dashboard({ session }) {
             ))}
           </section>
 
-          {filterCat && (
+          <h2 style={{ fontSize: 17, margin: "8px 0 6px" }}>Properties</h2>
+          <section style={{ marginBottom: 20 }}>
+            {propRows.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => pick(null, filterProp === p.id ? null : p.id)}
+                style={{ display: "flex", justifyContent: "space-between", width: "100%", textAlign: "left", background: filterProp === p.id ? "#eef2ff" : "transparent", border: "none", borderBottom: "1px solid #e5e7eb", padding: "8px 4px", cursor: "pointer", gap: 8 }}
+              >
+                <span style={{ fontSize: 15 }}>{p.name}</span>
+                <span style={{ fontSize: 13, textAlign: "right", whiteSpace: "nowrap" }}>
+                  {p.income > 0 && <span style={{ color: "#15803d" }}>in {money(p.income)} · </span>}
+                  <span>out {money(p.costs)}</span>
+                  <br />
+                  <strong style={{ color: p.net >= 0 ? "#15803d" : "#b91c1c" }}>net {p.net >= 0 ? "+" : ""}{money(p.net)}</strong>
+                </span>
+              </button>
+            ))}
+          </section>
+
+          {(filterCat || filterProp) && (
             <p style={{ color: "#4f46e5" }}>
-              Showing {cats.find((c) => c.id === filterCat)?.name} only ·{" "}
-              <button onClick={() => setFilterCat(null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
+              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name : filterProp === "household" ? "Household" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
+              <button onClick={() => pick(null, null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
             </p>
           )}
 
@@ -284,7 +347,17 @@ function Dashboard({ session }) {
                         {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     )}
-                    {t.amount < 0 && !isT && <small style={{ color: "#15803d" }}>money in</small>}
+                    {t.amount < 0 && !isT && <small style={{ color: "#15803d" }}>money in </small>}
+                    {!isT && (
+                      <select
+                        value={propOf(t) || householdId || ""}
+                        onChange={(e) => setProperty(t, e.target.value)}
+                        style={{ marginTop: 4, marginLeft: 4, fontSize: 13, padding: "2px 4px", maxWidth: "100%", border: "1px solid #d1d5db", borderRadius: 6, background: t.property_id ? "#eef2ff" : "#fff" }}
+                      >
+                        {householdId && <option value={householdId}>Household</option>}
+                        {realProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    )}
                   </span>
                   <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                     <strong style={{ color: t.amount < 0 ? "#15803d" : undefined }}>
