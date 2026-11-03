@@ -17,14 +17,14 @@ function loadPlaid() {
   });
 }
 
-function ConnectBank({ session, onChange }) {
+function ConnectBank({ session, onChange, profile = "primary", label = "Connect bank" }) {
   const [msg, setMsg] = useState("");
   const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
 
   async function connect() {
     try {
       setMsg("Opening Plaid...");
-      const res = await fetch("/api/plaid/link-token", { method: "POST", headers });
+      const res = await fetch("/api/plaid/link-token", { method: "POST", headers, body: JSON.stringify({ profile }) });
       const data = await res.json();
       if (!res.ok) return setMsg(`Could not start: ${data.error || res.status}`);
       const Plaid = await loadPlaid();
@@ -35,7 +35,7 @@ function ConnectBank({ session, onChange }) {
           const r = await fetch("/api/plaid/exchange", {
             method: "POST",
             headers,
-            body: JSON.stringify({ public_token, institution: metadata?.institution?.name }),
+            body: JSON.stringify({ public_token, institution: metadata?.institution?.name, profile }),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) return setMsg("Connection failed at the last step.");
@@ -51,7 +51,7 @@ function ConnectBank({ session, onChange }) {
 
   return (
     <div style={{ margin: "12px 0" }}>
-      <button onClick={connect} style={{ padding: "10px 14px", fontSize: 16 }}>Connect bank</button>
+      <button onClick={connect} style={{ padding: "10px 14px", fontSize: 16 }}>{label}</button>
       {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
     </div>
   );
@@ -131,6 +131,30 @@ const day = (d) => d.toISOString().slice(0, 10);
 const likeToRegex = (pattern) =>
   new RegExp("^" + pattern.split("%").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
 
+// Estimate a fixed-rate loan from its last statement: each matching payment after the statement date
+// pays that period's interest (balance x rate x days / 365) first, and the rest reduces the balance.
+function estimateLoan(account, txns) {
+  if (!account.is_manual || !account.apr || !account.payment_amount || account.current_balance == null) return null;
+  const re = likeToRegex(account.payment_pattern || "%");
+  const start = String(account.balance_updated_at || "").slice(0, 10);
+  const pays = txns
+    .filter((t) => t.posted_date > start && Math.abs(Number(t.amount) - Number(account.payment_amount)) < 0.005 && re.test(t.merchant || ""))
+    .sort((a, b) => a.posted_date.localeCompare(b.posted_date));
+  let balance = Number(account.current_balance), last = start, interest = 0, principal = 0;
+  const rows = [];
+  for (const t of pays) {
+    const days = Math.max(1, Math.round((new Date(t.posted_date) - new Date(last)) / 864e5));
+    const i = Math.round(balance * Number(account.apr) * days / 365 * 100) / 100;
+    const p = Math.round((Number(t.amount) - i) * 100) / 100;
+    balance = Math.round((balance - p) * 100) / 100;
+    interest += i; principal += p; last = t.posted_date;
+    rows.push({ date: t.posted_date, interest: i, principal: p, balance });
+  }
+  return { balance, payments: rows.length, interest, principal, rows };
+}
+
+const monthsOld = (d) => (d ? (Date.now() - new Date(d)) / (30.44 * 864e5) : 0);
+
 // Rent paid near the end of a month (day 25 or later) counts for the next month.
 function rentMonths(payments, months = 12) {
   const byMonth = {};
@@ -172,7 +196,7 @@ async function loadAllTransactions() {
 
 // Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
 // Loans and credit cards show what you owe.
-function AccountsList({ accounts }) {
+function AccountsList({ accounts, txns, crypto = [] }) {
   const banks = {};
   for (const a of accounts) (banks[a.institution || "Other"] = banks[a.institution || "Other"] || []).push(a);
   const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
@@ -186,12 +210,30 @@ function AccountsList({ accounts }) {
             <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0", borderBottom: "1px solid #f3f4f6", fontSize: 14 }}>
               <span>
                 {a.name} {a.mask && <span style={{ color: "#6b7280" }}>••{a.mask}</span>}
+                {a.owner_person === "Wife" && <small style={{ marginLeft: 6, padding: "0 6px", borderRadius: 8, background: "#fce7f3", color: "#9d174d" }}>Wife</small>}
                 <br />
                 <small style={{ color: "#6b7280" }}>
                   {label(a)}
                   {a.is_manual && ` · from statement, as of ${String(a.balance_updated_at || "").slice(0, 10)}`}
                 </small>
                 {a.is_manual && a.balance_note && <><br /><small style={{ color: "#6b7280" }}>{a.balance_note}</small></>}
+                {a.institution === "Coinbase (holdings)" && crypto.length > 0 && (
+                  <><br /><small style={{ color: "#6b7280" }}>
+                    {crypto.filter((h) => Number(h.last_value) >= 1).map((h) => `${h.symbol} ${Number(h.quantity)} = ${money(Number(h.last_value))}`).join(" · ")}
+                    {crypto.some((h) => !(Number(h.last_value) >= 1)) && ` · ${crypto.filter((h) => !(Number(h.last_value) >= 1)).length} small coins under $1`}
+                  </small></>
+                )}
+                {(() => {
+                  const e = estimateLoan(a, txns);
+                  if (!e) return null;
+                  return (
+                    <><br /><small style={{ color: "#4f46e5" }}>
+                      {e.payments
+                        ? `Estimated now: ${money(e.balance)} after ${e.payments} payment${e.payments > 1 ? "s" : ""} since the statement (interest ${money(e.interest)}, principal ${money(e.principal)}, at ${(Number(a.apr) * 100).toFixed(2)}%)`
+                        : `No payments since the statement yet. Next estimate uses ${(Number(a.apr) * 100).toFixed(2)}% on each ${money(Number(a.payment_amount))} payment.`}
+                    </small></>
+                  );
+                })()}
               </span>
               <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                 {a.current_balance == null ? <small style={{ color: "#6b7280" }}>press Refresh</small> : (
@@ -220,6 +262,7 @@ function Dashboard({ session }) {
   const [cats, setCats] = useState([]);
   const [props, setProps] = useState([]);
   const [rules, setRules] = useState([]);
+  const [crypto, setCrypto] = useState([]);
   const [filterProp, setFilterProp] = useState(null); // null = all, "household", or a property id
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
@@ -227,10 +270,11 @@ function Dashboard({ session }) {
   const [showAccounts, setShowAccounts] = useState(false);
 
   async function load() {
-    const [a, c, p, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, property_id, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note"),
+    const [a, c, p, cr, r, t] = await Promise.all([
+      supabase.from("accounts").select("id, name, mask, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
+      supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
       supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction").order("created_at"),
       loadAllTransactions(),
     ]);
@@ -238,15 +282,28 @@ function Dashboard({ session }) {
     setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
     setCats(c.data || []);
     setProps(p.data || []);
+    setCrypto(cr.data || []);
     setRules((r.data || []).map((x) => ({ ...x, re: likeToRegex(x.pattern) })));
     setTxns(t.data);
   }
 
+  // Refresh one bank per request (stays within Cloudflare's free-plan limits), then match properties and price crypto.
   async function refresh() {
-    setMsg("Refreshing from your banks...");
-    const r = await fetch("/api/plaid/sync", { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } });
-    const d = await r.json().catch(() => ({}));
-    setMsg(r.ok ? `Up to date. ${d.added} new, ${d.modified} changed, ${d.removed} removed.` : "Refresh failed. Try again.");
+    const headers = { "content-type": "application/json", authorization: `Bearer ${session.access_token}` };
+    const post = (path, body) => fetch(path, { method: "POST", headers, body: JSON.stringify(body || {}) }).then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }));
+    setMsg("Refreshing...");
+    const list = await post("/api/plaid/items");
+    if (!list.ok) return setMsg("Refresh failed. Try again.");
+    const totals = { added: 0, modified: 0, removed: 0 }, failed = [];
+    for (const [i, item] of list.d.items.entries()) {
+      setMsg(`Refreshing ${i + 1} of ${list.d.items.length}: ${item.institution || "bank"}...`);
+      const r = await post("/api/plaid/sync", { item_id: item.item_id });
+      if (r.ok) { totals.added += r.d.added; totals.modified += r.d.modified; totals.removed += r.d.removed; }
+      else failed.push(item.institution || "a bank");
+    }
+    await post("/api/plaid/match");
+    await post("/api/crypto/update");
+    setMsg(`Up to date. ${totals.added} new, ${totals.modified} changed, ${totals.removed} removed.` + (failed.length ? ` Could not refresh: ${failed.join(", ")}.` : ""));
     load();
   }
 
@@ -338,6 +395,7 @@ function Dashboard({ session }) {
 
       <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
         <ConnectBank session={session} onChange={load} />
+        <ConnectBank session={session} onChange={load} profile="wife" label="Connect wife's bank" />
         <button onClick={refresh} style={{ padding: "10px 14px", fontSize: 16, margin: "12px 0" }}>Refresh</button>
       </div>
       {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
@@ -345,7 +403,12 @@ function Dashboard({ session }) {
       <button onClick={() => setShowAccounts(!showAccounts)} style={{ padding: "6px 10px", marginBottom: 8 }}>
         {showAccounts ? "Hide accounts" : `Connected accounts (${Object.keys(accounts).length})`}
       </button>
-      {showAccounts && <AccountsList accounts={Object.values(accounts)} />}
+      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} />}
+      {Object.values(accounts).some((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6) && (
+        <p style={{ background: "#fef3c7", padding: "8px 10px", borderRadius: 6, fontSize: 14 }}>
+          📄 Time for a new statement: {Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6).map((a) => a.name).join(", ")}
+        </p>
+      )}
 
       {txns === null ? (
         <p>Loading...</p>
