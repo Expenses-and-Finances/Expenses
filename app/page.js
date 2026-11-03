@@ -123,20 +123,38 @@ export default function Home() {
   return <Dashboard session={session} />;
 }
 
-const money = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+const money = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const day = (d) => d.toISOString().slice(0, 10);
+const PERIODS = {
+  "30d": { label: "Last 30 days", range: () => [day(new Date(Date.now() - 30 * 864e5)), day(new Date())] },
+  month: { label: "This month", range: () => { const n = new Date(); return [day(new Date(n.getFullYear(), n.getMonth(), 1)), day(n)]; } },
+  last: { label: "Last month", range: () => { const n = new Date(); return [day(new Date(n.getFullYear(), n.getMonth() - 1, 1)), day(new Date(n.getFullYear(), n.getMonth(), 0))]; } },
+  "90d": { label: "Last 90 days", range: () => [day(new Date(Date.now() - 90 * 864e5)), day(new Date())] },
+  year: { label: "This year", range: () => { const n = new Date(); return [`${n.getFullYear()}-01-01`, day(n)]; } },
+};
 
 function Dashboard({ session }) {
   const [txns, setTxns] = useState(null);
   const [accounts, setAccounts] = useState({});
+  const [cats, setCats] = useState([]);
+  const [period, setPeriod] = useState("30d");
+  const [filterCat, setFilterCat] = useState(null);
   const [msg, setMsg] = useState("");
 
   async function load() {
-    const [a, t] = await Promise.all([
+    const [a, c, t] = await Promise.all([
       supabase.from("accounts").select("id, name, mask"),
-      supabase.from("transactions").select("id, posted_date, merchant, amount, pending, plaid_category, account_id, is_transfer, auto_transfer").order("posted_date", { ascending: false }).limit(300),
+      supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
+      supabase
+        .from("transactions")
+        .select("id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer")
+        .order("posted_date", { ascending: false })
+        .limit(1000),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
     setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
+    setCats(c.data || []);
     setTxns(t.data);
   }
 
@@ -153,20 +171,42 @@ function Dashboard({ session }) {
   // Your manual choice wins; otherwise use the automatic label from the bank sync.
   const transfer = (t) => (t.is_transfer ?? t.auto_transfer) === true;
 
-  async function toggleTransfer(t) {
-    const next = !transfer(t);
-    // Setting it back to match the automatic label clears the manual choice.
-    const value = next === Boolean(t.auto_transfer) ? null : next;
-    setTxns((list) => list.map((x) => (x.id === t.id ? { ...x, is_transfer: value } : x)));
-    const { error } = await supabase.from("transactions").update({ is_transfer: value }).eq("id", t.id);
+  // Automatic category: a specific Plaid label beats a broad one; anything unmatched goes to "Other".
+  const byCode = {};
+  for (const c of cats) for (const code of c.plaid_codes || []) byCode[code] = c;
+  const other = cats.find((c) => c.name === "Other");
+  const autoCat = (t) => byCode[t.plaid_category_detailed] || byCode[t.plaid_category] || other;
+  const catOf = (t) => cats.find((c) => c.id === t.category_id) || autoCat(t);
+
+  async function save(t, changes) {
+    setTxns((list) => list.map((x) => (x.id === t.id ? { ...x, ...changes } : x)));
+    const { error } = await supabase.from("transactions").update(changes).eq("id", t.id);
     if (error) { setMsg("Could not save that change."); load(); }
   }
 
-  // Spending = money out in the last 30 days, not counting transfers between your own accounts.
-  const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
-  const recent = (txns || []).filter((t) => t.posted_date >= since && t.amount > 0);
-  const spent = recent.filter((t) => !transfer(t)).reduce((s, t) => s + Number(t.amount), 0);
-  const moved = recent.filter(transfer).reduce((s, t) => s + Number(t.amount), 0);
+  function toggleTransfer(t) {
+    const next = !transfer(t);
+    // Setting it back to match the automatic label clears the manual choice.
+    save(t, { is_transfer: next === Boolean(t.auto_transfer) ? null : next });
+  }
+
+  function setCategory(t, id) {
+    // Picking the automatic category clears the manual choice, so future label fixes still apply.
+    save(t, { category_id: id === autoCat(t)?.id ? null : id });
+  }
+
+  const [from, to] = PERIODS[period].range();
+  const inPeriod = (txns || []).filter((t) => t.posted_date >= from && t.posted_date <= to);
+  const spending = inPeriod.filter((t) => t.amount > 0 && !transfer(t));
+  const spent = spending.reduce((s, t) => s + Number(t.amount), 0);
+  const moved = inPeriod.filter((t) => t.amount > 0 && transfer(t)).reduce((s, t) => s + Number(t.amount), 0);
+
+  const totals = {};
+  for (const t of spending) { const c = catOf(t); if (c) totals[c.id] = (totals[c.id] || 0) + Number(t.amount); }
+  const breakdown = cats.filter((c) => totals[c.id]).map((c) => ({ ...c, total: totals[c.id] })).sort((x, y) => y.total - x.total);
+  const top = breakdown[0]?.total || 1;
+
+  const shown = filterCat ? inPeriod.filter((t) => !transfer(t) && t.amount > 0 && catOf(t)?.id === filterCat) : inPeriod;
 
   return (
     <main style={wrap}>
@@ -187,23 +227,64 @@ function Dashboard({ session }) {
         <p style={{ color: "#6b7280" }}>No transactions yet. Connect a bank to get started.</p>
       ) : (
         <>
-          <p style={{ fontWeight: 600, marginBottom: 2 }}>Spent in the last 30 days: {money(spent)}</p>
+          <select value={period} onChange={(e) => { setPeriod(e.target.value); setFilterCat(null); }} style={{ padding: 8, fontSize: 16, marginBottom: 8 }}>
+            {Object.entries(PERIODS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+
+          <p style={{ fontSize: 20, fontWeight: 700, margin: "4px 0 2px" }}>Spent: {money(spent)}</p>
           <p style={{ color: "#6b7280", marginTop: 0 }}><small>Not counted: {money(moved)} moved between your accounts</small></p>
+
+          <section style={{ margin: "12px 0 20px" }}>
+            {breakdown.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setFilterCat(filterCat === c.id ? null : c.id)}
+                style={{ display: "block", width: "100%", textAlign: "left", background: filterCat === c.id ? "#eef2ff" : "transparent", border: "none", padding: "6px 4px", cursor: "pointer", borderRadius: 6 }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15 }}>
+                  <span>{c.name}</span>
+                  <span>{money(c.total)} <small style={{ color: "#6b7280" }}>{Math.round((c.total / spent) * 100)}%</small></span>
+                </div>
+                <div style={{ height: 8, background: "#e5e7eb", borderRadius: 4, marginTop: 4 }}>
+                  <div style={{ height: 8, width: `${(c.total / top) * 100}%`, background: "#4f46e5", borderRadius: 4 }} />
+                </div>
+              </button>
+            ))}
+          </section>
+
+          {filterCat && (
+            <p style={{ color: "#4f46e5" }}>
+              Showing {cats.find((c) => c.id === filterCat)?.name} only ·{" "}
+              <button onClick={() => setFilterCat(null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
+            </p>
+          )}
+
           <ul style={{ listStyle: "none", padding: 0 }}>
-            {txns.map((t) => {
+            {shown.map((t) => {
               const acct = accounts[t.account_id];
               const isT = transfer(t);
+              const cat = catOf(t);
               return (
                 <li key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e5e7eb", opacity: isT ? 0.55 : 1 }}>
-                  <span>
+                  <span style={{ minWidth: 0 }}>
                     {t.merchant || "Unknown"}
                     {t.pending && <small style={{ color: "#b45309" }}> · pending</small>}
                     <br />
                     <small style={{ color: "#6b7280" }}>
                       {t.posted_date}
                       {acct ? ` · ${acct.name}${acct.mask ? " ••" + acct.mask : ""}` : ""}
-                      {t.plaid_category ? ` · ${t.plaid_category.replace(/_/g, " ").toLowerCase()}` : ""}
                     </small>
+                    <br />
+                    {t.amount > 0 && !isT && (
+                      <select
+                        value={cat?.id || ""}
+                        onChange={(e) => setCategory(t, e.target.value)}
+                        style={{ marginTop: 4, fontSize: 13, padding: "2px 4px", maxWidth: "100%", border: "1px solid #d1d5db", borderRadius: 6, background: t.category_id ? "#eef2ff" : "#fff" }}
+                      >
+                        {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    )}
+                    {t.amount < 0 && !isT && <small style={{ color: "#15803d" }}>money in</small>}
                   </span>
                   <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                     <strong style={{ color: t.amount < 0 ? "#15803d" : undefined }}>
