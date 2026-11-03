@@ -56,6 +56,33 @@ async function db(env, method, path, body, prefer) {
 
 const UPSERT = "resolution=merge-duplicates,return=representation";
 
+// Bank access tokens are stored encrypted (AES-256-GCM). The key lives only in Cloudflare as TOKEN_ENCRYPTION_KEY,
+// so a copy of the database alone cannot be used to reach your bank data.
+const ENC_PREFIX = "enc:v1:";
+const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+
+async function tokenKey(env) {
+  const raw = env.TOKEN_ENCRYPTION_KEY ? unb64(env.TOKEN_ENCRYPTION_KEY.trim()) : null;
+  if (!raw || raw.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY missing or not 32 bytes");
+  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encryptToken(env, plain) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await tokenKey(env), new TextEncoder().encode(plain)));
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv); out.set(ct, iv.length);
+  return ENC_PREFIX + b64(out);
+}
+
+async function decryptToken(env, stored) {
+  if (!stored.startsWith(ENC_PREFIX)) return stored; // older plain value; re-encrypted on next sync
+  const data = unb64(stored.slice(ENC_PREFIX.length));
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: data.slice(0, 12) }, await tokenKey(env), data.slice(12));
+  return new TextDecoder().decode(pt);
+}
+
 // Money moving between your own accounts: transfers and credit card payments.
 // Mortgage and other loan payments still count as spending.
 const TRANSFER_PRIMARY = ["TRANSFER_IN", "TRANSFER_OUT"];
@@ -67,10 +94,14 @@ function isTransfer(t) {
 
 // Pull new, changed and removed transactions for one bank connection.
 async function syncItem(env, item) {
+  const accessToken = await decryptToken(env, item.access_token);
+  if (!item.access_token.startsWith(ENC_PREFIX)) {
+    await db(env, "PATCH", `plaid_items?item_id=eq.${encodeURIComponent(item.item_id)}`, { access_token: await encryptToken(env, accessToken) });
+  }
   let cursor = item.sync_cursor || undefined;
   let added = [], modified = [], removed = [], accounts = [];
   for (let page = 0; page < 10; page++) {
-    const data = await plaid(env, "/transactions/sync", { access_token: item.access_token, cursor, count: 500 });
+    const data = await plaid(env, "/transactions/sync", { access_token: accessToken, cursor, count: 500 });
     added = added.concat(data.added);
     modified = modified.concat(data.modified);
     removed = removed.concat(data.removed);
@@ -159,7 +190,7 @@ export default {
           const data = await plaid(env, "/item/public_token/exchange", { public_token });
           const [item] = await db(env, "POST", "plaid_items?on_conflict=item_id", [{
             item_id: data.item_id,
-            access_token: data.access_token,
+            access_token: await encryptToken(env, data.access_token),
             institution: typeof institution === "string" ? institution.slice(0, 100) : null,
           }], UPSERT);
           const result = await syncItem(env, item);
