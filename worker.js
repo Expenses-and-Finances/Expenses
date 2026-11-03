@@ -213,6 +213,22 @@ export default {
         const body = request.headers.get("content-type")?.includes("json") ? await request.json().catch(() => ({})) : {};
         const profile = body.profile === "wife" ? "wife" : "primary";
 
+        if (url.pathname === "/api/plaid/link-token" && body.item_id) {
+          // Reconnect ("update mode"): same connection, fresh bank login, no new slot used.
+          const [item] = await db(env, "GET", `plaid_items?select=item_id,access_token,plaid_profile&item_id=eq.${encodeURIComponent(body.item_id)}`);
+          if (!item) return json({ error: "not found" }, 404);
+          const data = await plaid(env, "/link/token/create", {
+            client_name: "Expenses",
+            language: "en",
+            country_codes: ["US"],
+            user: { client_user_id: user.id },
+            access_token: await decryptToken(env, item.access_token),
+          }, item.plaid_profile || "primary");
+          // Start the next sync from scratch so anything missed comes back in.
+          await db(env, "PATCH", `plaid_items?item_id=eq.${encodeURIComponent(item.item_id)}`, { sync_cursor: null });
+          return json({ link_token: data.link_token });
+        }
+
         if (url.pathname === "/api/plaid/link-token") {
           const data = await plaid(env, "/link/token/create", {
             client_name: "Expenses",
