@@ -85,10 +85,13 @@ async function decryptToken(env, stored) {
 
 // Money moving between your own accounts: transfers and credit card payments.
 // Mortgage and other loan payments still count as spending.
+// Cash withdrawals and Venmo/Zelle-type payments count as spending; tap "Transfer?" in the app for ones to your own accounts.
 const TRANSFER_PRIMARY = ["TRANSFER_IN", "TRANSFER_OUT"];
 const TRANSFER_DETAILED = ["LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"];
+const SPENDING_DETAILED = ["TRANSFER_OUT_WITHDRAWAL", "TRANSFER_OUT_TRANSFER_OUT_FROM_APPS"];
 function isTransfer(t) {
   const c = t.personal_finance_category || {};
+  if (SPENDING_DETAILED.includes(c.detailed)) return false;
   return TRANSFER_PRIMARY.includes(c.primary) || TRANSFER_DETAILED.includes(c.detailed);
 }
 
@@ -152,6 +155,11 @@ async function syncItem(env, item) {
   return { added: added.length, modified: modified.length, removed: gone.length };
 }
 
+// Link loan payments from checking to the property whose loan they paid (logic lives in the database).
+async function matchProperties(env) {
+  await db(env, "POST", "rpc/match_property_payments", {});
+}
+
 async function syncAll(env) {
   const items = await db(env, "GET", "plaid_items?select=item_id,access_token,institution,sync_cursor");
   const totals = { connections: items.length, added: 0, modified: 0, removed: 0 };
@@ -161,6 +169,7 @@ async function syncAll(env) {
     totals.modified += r.modified;
     totals.removed += r.removed;
   }
+  await matchProperties(env);
   return totals;
 }
 
@@ -196,6 +205,7 @@ export default {
             institution: typeof institution === "string" ? institution.slice(0, 100) : null,
           }], UPSERT);
           const result = await syncItem(env, item);
+          await matchProperties(env);
           return json({ connected: true, ...result });
         }
 
