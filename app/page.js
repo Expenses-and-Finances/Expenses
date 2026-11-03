@@ -170,6 +170,46 @@ async function loadAllTransactions() {
   return { data: all, error: null };
 }
 
+// Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
+// Loans and credit cards show what you owe.
+function AccountsList({ accounts }) {
+  const banks = {};
+  for (const a of accounts) (banks[a.institution || "Other"] = banks[a.institution || "Other"] || []).push(a);
+  const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
+  const label = (a) => (a.subtype || a.type || "").replace(/\b\w/g, (c) => c.toUpperCase());
+  return (
+    <section style={{ marginBottom: 16, border: "1px solid #e5e7eb", borderRadius: 8, padding: "4px 10px" }}>
+      {Object.entries(banks).sort().map(([bank, list]) => (
+        <div key={bank} style={{ padding: "6px 0" }}>
+          <strong>{bank}</strong> <small style={{ color: "#6b7280" }}>· {list.length} accounts</small>
+          {list.sort((x, y) => (order[x.type] || 9) - (order[y.type] || 9)).map((a) => (
+            <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0", borderBottom: "1px solid #f3f4f6", fontSize: 14 }}>
+              <span>
+                {a.name} {a.mask && <span style={{ color: "#6b7280" }}>••{a.mask}</span>}
+                <br />
+                <small style={{ color: "#6b7280" }}>{label(a)}</small>
+              </span>
+              <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                {a.current_balance == null ? <small style={{ color: "#6b7280" }}>press Refresh</small> : (
+                  <>
+                    <strong style={{ color: a.type === "loan" || a.type === "credit" ? "#b91c1c" : undefined }}>
+                      {a.type === "loan" || a.type === "credit" ? "owe " : ""}{money(Number(a.current_balance))}
+                    </strong>
+                    {a.available_balance != null && a.type === "depository" && Number(a.available_balance) !== Number(a.current_balance) && (
+                      <><br /><small style={{ color: "#6b7280" }}>available {money(Number(a.available_balance))}</small></>
+                    )}
+                  </>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      ))}
+      <p style={{ color: "#6b7280", margin: "6px 0" }}><small>Balances update each time you press Refresh. Banks may report them with a short delay.</small></p>
+    </section>
+  );
+}
+
 function Dashboard({ session }) {
   const [txns, setTxns] = useState(null);
   const [accounts, setAccounts] = useState({});
@@ -180,10 +220,11 @@ function Dashboard({ session }) {
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
   const [msg, setMsg] = useState("");
+  const [showAccounts, setShowAccounts] = useState(false);
 
   async function load() {
     const [a, c, p, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, property_id"),
+      supabase.from("accounts").select("id, name, mask, property_id, type, subtype, institution, current_balance, available_balance, balance_updated_at"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction").order("created_at"),
@@ -296,6 +337,11 @@ function Dashboard({ session }) {
         <button onClick={refresh} style={{ padding: "10px 14px", fontSize: 16, margin: "12px 0" }}>Refresh</button>
       </div>
       {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
+
+      <button onClick={() => setShowAccounts(!showAccounts)} style={{ padding: "6px 10px", marginBottom: 8 }}>
+        {showAccounts ? "Hide accounts" : `Connected accounts (${Object.keys(accounts).length})`}
+      </button>
+      {showAccounts && <AccountsList accounts={Object.values(accounts)} />}
 
       {txns === null ? (
         <p>Loading...</p>
