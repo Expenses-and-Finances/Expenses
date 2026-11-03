@@ -651,11 +651,30 @@ function Dashboard({ session }) {
     }
   }
   const recent = (t) => (Date.now() - new Date(t.posted_date)) / 864e5 < 4;
-  const unmatchedBank = bankPays.filter((t) => !matchOf[t.id] && t.posted_date >= from && t.posted_date <= to);
+  // Which connected card a bank payment is aimed at, from the payee text. Discover cards now sit under Capital One.
+  const ISSUERS = [[/capital one/i, /capital one/i], [/discover/i, /discover|capital one/i], [/amex|american express/i, /american express/i],
+    [/bank of america|bk of amer/i, /bank of america/i], [/robinhood/i, /robinhood/i], [/citi/i, /citi/i], [/chase/i, /chase/i],
+    [/wells|\bwf\b/i, /wells/i], [/barclay/i, /barclay/i], [/apple card|goldman/i, /apple|goldman/i], [/target/i, /target|td bank/i]];
+  const cardAccts = Object.values(accounts).filter((a) => a.type === "credit" && !dupes.has(a.id));
+  const firstSeen = {};
+  for (const t of liveTxns) if (isCard(t) && (!firstSeen[t.account_id] || t.posted_date < firstSeen[t.account_id])) firstSeen[t.account_id] = t.posted_date;
+  const targetCards = (t) => {
+    const hit = ISSUERS.find(([re]) => re.test(t.merchant || ""));
+    return hit ? cardAccts.filter((a) => hit[1].test(a.institution || "")) : [];
+  };
+  // A payment from before the card's history starts can't be checked, so it isn't flagged.
+  const beforeHistory = (t) => {
+    const cards = targetCards(t);
+    if (!cards.length) return false;
+    const start = cards.map((a) => firstSeen[a.id]).filter(Boolean).sort()[0];
+    return !start || t.posted_date < start;
+  };
+  const unmatchedBank = bankPays.filter((t) => !matchOf[t.id] && !beforeHistory(t) && t.posted_date >= from && t.posted_date <= to);
   const unmatchedCard = cardGets.filter((t) => !matchOf[t.id] && t.posted_date >= from && t.posted_date <= to);
   const matchedCount = bankPays.filter((t) => matchOf[t.id] && t.posted_date >= from && t.posted_date <= to).length;
   const cardIssue = (t) => {
     if (matchOf[t.id]) return null;
+    if (isBank(t) && beforeHistory(t)) return null;
     if (isBank(t)) return recent(t) ? "No matching card payment yet (may still be posting)" : "No matching payment on any connected card";
     if (isCard(t)) return recent(t) ? "No matching bank payment yet" : "Paid from an account the app doesn't see";
     return null;
@@ -728,7 +747,12 @@ function Dashboard({ session }) {
                 const groups = {};
                 for (const t of unmatchedBank) {
                   const k = "b:" + payee(t);
-                  (groups[k] = groups[k] || { title: `Paid to ${payee(t)}`, note: "No connected card received these. Is this card connected?", items: [] }).items.push(t);
+                  const connected = targetCards(t).length > 0;
+                  (groups[k] = groups[k] || {
+                    title: `Paid to ${payee(t)}`,
+                    note: connected ? "That card is connected, but no payment with this amount and date showed up on it." : "This card isn't connected, so the payment can't be checked.",
+                    items: [],
+                  }).items.push(t);
                 }
                 for (const t of unmatchedCard) {
                   const k = "c:" + t.account_id;
