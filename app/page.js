@@ -126,6 +126,28 @@ export default function Home() {
 const money = (n) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const day = (d) => d.toISOString().slice(0, 10);
+
+// Rule patterns use % for "anything", like the database. Matching ignores capitals.
+const likeToRegex = (pattern) =>
+  new RegExp("^" + pattern.split("%").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+
+// Rent paid near the end of a month (day 25 or later) counts for the next month.
+function rentMonths(payments, months = 12) {
+  const byMonth = {};
+  for (const t of payments) {
+    const [y, m, d] = t.posted_date.split("-").map(Number);
+    const key = d >= 25 ? (m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`) : `${y}-${String(m).padStart(2, "0")}`;
+    (byMonth[key] = byMonth[key] || []).push(t);
+  }
+  const now = new Date();
+  const out = [];
+  for (let i = 0; i < months; i++) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+    out.push({ key, label: dt.toLocaleString("en-US", { month: "short", year: "numeric" }), items: byMonth[key] || [] });
+  }
+  return out;
+}
 const PERIODS = {
   "30d": { label: "Last 30 days", range: () => [day(new Date(Date.now() - 30 * 864e5)), day(new Date())] },
   month: { label: "This month", range: () => { const n = new Date(); return [day(new Date(n.getFullYear(), n.getMonth(), 1)), day(n)]; } },
@@ -153,22 +175,25 @@ function Dashboard({ session }) {
   const [accounts, setAccounts] = useState({});
   const [cats, setCats] = useState([]);
   const [props, setProps] = useState([]);
+  const [rules, setRules] = useState([]);
   const [filterProp, setFilterProp] = useState(null); // null = all, "household", or a property id
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
   const [msg, setMsg] = useState("");
 
   async function load() {
-    const [a, c, p, t] = await Promise.all([
+    const [a, c, p, r, t] = await Promise.all([
       supabase.from("accounts").select("id, name, mask, property_id"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
+      supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note").order("created_at"),
       loadAllTransactions(),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
     setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
     setCats(c.data || []);
     setProps(p.data || []);
+    setRules((r.data || []).map((x) => ({ ...x, re: likeToRegex(x.pattern) })));
     setTxns(t.data);
   }
 
@@ -182,20 +207,27 @@ function Dashboard({ session }) {
 
   useEffect(() => { load(); }, []);
 
-  // Your manual choice wins; otherwise use the automatic label from the bank sync.
-  const transfer = (t) => (t.is_transfer ?? t.auto_transfer) === true;
+  // Payee rules sit between your manual choice and the automatic labels.
+  const ruleFor = (t) => rules.find((r) => r.re.test(t.merchant || ""));
+
+  // Your manual choice wins, then a payee rule, then the automatic label from the bank sync.
+  const autoTransfer = (t) => ruleFor(t)?.is_transfer ?? t.auto_transfer;
+  const transfer = (t) => (t.is_transfer ?? autoTransfer(t)) === true;
 
   // Automatic category: a specific Plaid label beats a broad one; anything unmatched goes to "Other".
   const byCode = {};
   for (const c of cats) for (const code of c.plaid_codes || []) byCode[code] = c;
   const other = cats.find((c) => c.name === "Other");
-  const autoCat = (t) => byCode[t.plaid_category_detailed] || byCode[t.plaid_category] || other;
+  const autoCat = (t) => {
+    const rc = ruleFor(t)?.category_id;
+    return (rc && cats.find((c) => c.id === rc)) || byCode[t.plaid_category_detailed] || byCode[t.plaid_category] || other;
+  };
   const catOf = (t) => cats.find((c) => c.id === t.category_id) || autoCat(t);
 
   // Belongs to: your manual choice, else a matched loan payment, else the account's property, else Household (null).
   // "Household" is a real choice so a property item can be moved back to it.
   const householdId = props.find((p) => p.name === "Household")?.id;
-  const autoProp = (t) => t.auto_property_id || accounts[t.account_id]?.property_id || null;
+  const autoProp = (t) => ruleFor(t)?.property_id || t.auto_property_id || accounts[t.account_id]?.property_id || null;
   const rawProp = (t) => t.property_id || autoProp(t);
   const propOf = (t) => { const p = rawProp(t); return p === householdId ? null : p; };
   const realProps = props.filter((p) => p.id !== householdId);
@@ -209,7 +241,7 @@ function Dashboard({ session }) {
   function toggleTransfer(t) {
     const next = !transfer(t);
     // Setting it back to match the automatic label clears the manual choice.
-    save(t, { is_transfer: next === Boolean(t.auto_transfer) ? null : next });
+    save(t, { is_transfer: next === Boolean(autoTransfer(t)) ? null : next });
   }
 
   function setProperty(t, id) {
@@ -314,6 +346,39 @@ function Dashboard({ session }) {
               </button>
             ))}
           </section>
+
+          {(() => {
+            const rentRule = rules.find((r) => /rent/i.test(r.note || ""));
+            if (!rentRule) return null;
+            const pays = (txns || []).filter((t) => t.amount > 0 && rentRule.re.test(t.merchant || ""));
+            return (
+              <>
+                <h2 style={{ fontSize: 17, margin: "8px 0 6px" }}>Rent</h2>
+                <p style={{ color: "#6b7280", marginTop: 0 }}><small>{rentRule.note}. Paid on the 25th or later counts for next month. Only payments from connected accounts show here.</small></p>
+                <section style={{ marginBottom: 20 }}>
+                  {rentMonths(pays).map((m) => {
+                    const total = m.items.reduce((s, t) => s + Number(t.amount), 0);
+                    return (
+                      <div key={m.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 4px", borderBottom: "1px solid #e5e7eb", fontSize: 14 }}>
+                        <span>{m.label}</span>
+                        {m.items.length ? (
+                          <span style={{ textAlign: "right" }}>
+                            <span style={{ color: "#15803d" }}>✓ {money(total)}</span>
+                            <br />
+                            <small style={{ color: "#6b7280" }}>
+                              {m.items.map((t) => `${t.posted_date}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}
+                            </small>
+                          </span>
+                        ) : (
+                          <span style={{ color: "#b45309" }}>not paid from these accounts</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </section>
+              </>
+            );
+          })()}
 
           {(filterCat || filterProp) && (
             <p style={{ color: "#4f46e5" }}>
