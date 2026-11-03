@@ -186,7 +186,7 @@ function Dashboard({ session }) {
       supabase.from("accounts").select("id, name, mask, property_id"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
-      supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note").order("created_at"),
+      supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction").order("created_at"),
       loadAllTransactions(),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
@@ -208,7 +208,9 @@ function Dashboard({ session }) {
   useEffect(() => { load(); }, []);
 
   // Payee rules sit between your manual choice and the automatic labels.
-  const ruleFor = (t) => rules.find((r) => r.re.test(t.merchant || ""));
+  // A rule can be limited to money in (e.g. rent deposits) or money out.
+  const ruleFor = (t) => rules.find((r) =>
+    (!r.direction || (r.direction === "in" ? t.amount < 0 : t.amount > 0)) && r.re.test(t.merchant || ""));
 
   // Your manual choice wins, then a payee rule, then the automatic label from the bank sync.
   const autoTransfer = (t) => ruleFor(t)?.is_transfer ?? t.auto_transfer;
