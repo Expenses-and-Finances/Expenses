@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-const wrap = { maxWidth: 480, margin: "0 auto", padding: 16 };
 
 // Loads Plaid's official Link script once, only when the button is pressed.
 function loadPlaid() {
@@ -44,10 +43,10 @@ function ReconnectBank({ session, item, onDone }) {
     }
   }
   return (
-    <span>
-      <button onClick={go} style={{ fontSize: 12, padding: "2px 8px", marginLeft: 6 }}>Reconnect</button>
-      {msg && <small style={{ color: "#6b7280", marginLeft: 6 }}>{msg}</small>}
-    </span>
+    <>
+      <button onClick={go} className="btn btn-small">Reconnect</button>
+      {msg && <span className="acct-note">{msg}</span>}
+    </>
   );
 }
 
@@ -84,9 +83,9 @@ function ConnectBank({ session, onChange, profile = "primary", label = "Connect 
   }
 
   return (
-    <div style={{ margin: "12px 0" }}>
-      <button onClick={connect} style={{ padding: "10px 14px", fontSize: 16 }}>{label}</button>
-      {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
+    <div>
+      <button onClick={connect} className="btn">{label}</button>
+      {msg && <p className="status" style={{ marginTop: 6 }}>{msg}</p>}
     </div>
   );
 }
@@ -121,13 +120,13 @@ export default function Home() {
   }
 
   if (checking) {
-    return <main style={wrap}><p>Loading...</p></main>;
+    return <main className="app"><p className="status">Loading...</p></main>;
   }
 
   if (!supabase) {
     return (
-      <main style={wrap}>
-        <h1 style={{ fontSize: 24 }}>Expenses</h1>
+      <main className="signin">
+        <h1>Expenses</h1>
         <p>The app is missing its connection settings. Ask for the setup steps.</p>
       </main>
     );
@@ -135,21 +134,14 @@ export default function Home() {
 
   if (!session) {
     return (
-      <main style={wrap}>
-        <h1 style={{ fontSize: 24 }}>Expenses</h1>
-        <p style={{ color: "#6b7280" }}>Sign in with your email. We'll send you a one-time link.</p>
-        <form onSubmit={sendLink} style={{ display: "flex", gap: 8 }}>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            style={{ flex: 1, padding: 10, fontSize: 16 }}
-          />
-          <button type="submit" style={{ padding: "10px 14px", fontSize: 16 }}>Send link</button>
+      <main className="signin">
+        <h1>Expenses</h1>
+        <p>Sign in with your email. We'll send you a one-time link.</p>
+        <form onSubmit={sendLink}>
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+          <button type="submit" className="btn btn-primary">Send link</button>
         </form>
-        {status && <p style={{ color: "#6b7280" }}>{status}</p>}
+        {status && <p>{status}</p>}
       </main>
     );
   }
@@ -271,69 +263,73 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
   const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
   const label = (a) => (a.subtype || a.type || "").replace(/\b\w/g, (c) => c.toUpperCase());
   return (
-    <section style={{ marginBottom: 16, border: "1px solid #e5e7eb", borderRadius: 8, padding: "4px 10px" }}>
-      {Object.entries(banks).sort().map(([bank, list]) => (
-        <div key={bank} style={{ padding: "6px 0" }}>
-          <strong>{bank}</strong> <small style={{ color: "#6b7280" }}>· {list.length} accounts</small>
-          {(() => {
-            const ids = new Set(list.map((a) => a.id));
-            const last = txns.filter((t) => ids.has(t.account_id)).reduce((m, t) => (t.posted_date > m ? t.posted_date : m), "");
-            const stale = last && (Date.now() - new Date(last).getTime()) / 864e5 > 14;
-            const itemId = list.find((a) => a.plaid_item_id)?.plaid_item_id;
-            return (
-              <>
-                {last && <small style={{ color: stale ? "#b45309" : "#6b7280" }}> · latest {last}{stale ? " ⚠️" : ""}</small>}
-                {itemId && <ReconnectBank session={session} item={{ item_id: itemId }} onDone={onChange} />}
-              </>
-            );
-          })()}
-          {list.sort((x, y) => (order[x.type] || 9) - (order[y.type] || 9)).map((a) => (
-            <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0", borderBottom: "1px solid #f3f4f6", fontSize: 14 }}>
-              <span>
-                {a.name} {a.mask && <span style={{ color: "#6b7280" }}>••{a.mask}</span>}
-                {a.owner_person === "Wife" && <small style={{ marginLeft: 6, padding: "0 6px", borderRadius: 8, background: "#fce7f3", color: "#9d174d" }}>Wife</small>}
-                {dupes.has(a.id) && <small style={{ marginLeft: 6, padding: "0 6px", borderRadius: 8, background: "#f3f4f6", color: "#6b7280" }}>duplicate, not counted</small>}
-                <br />
-                <small style={{ color: "#6b7280" }}>
-                  {label(a)}
-                  {a.is_manual && ` · from statement, as of ${String(a.balance_updated_at || "").slice(0, 10)}`}
-                </small>
-                {a.is_manual && a.balance_note && <><br /><small style={{ color: "#6b7280" }}>{a.balance_note}</small></>}
-                {a.institution === "Coinbase (holdings)" && crypto.length > 0 && (
-                  <><br /><small style={{ color: "#6b7280" }}>
-                    {crypto.filter((h) => Number(h.last_value) >= 1).map((h) => `${h.symbol} ${Number(h.quantity)} = ${money(Number(h.last_value))}`).join(" · ")}
-                    {crypto.some((h) => !(Number(h.last_value) >= 1)) && ` · ${crypto.filter((h) => !(Number(h.last_value) >= 1)).length} small coins under $1`}
-                  </small></>
-                )}
-                {(() => {
-                  const e = estimateLoan(a, txns);
-                  if (!e) return null;
-                  return (
-                    <><br /><small style={{ color: "#4f46e5" }}>
-                      {e.payments
-                        ? `Estimated now: ${money(e.balance)} after ${e.payments} payment${e.payments > 1 ? "s" : ""} since the statement (interest ${money(e.interest)}, principal ${money(e.principal)}, at ${(Number(a.apr) * 100).toFixed(2)}%)`
-                        : `No payments since the statement yet. Next estimate uses ${(Number(a.apr) * 100).toFixed(2)}% on each ${money(Number(a.payment_amount))} payment.`}
-                    </small></>
-                  );
-                })()}
-              </span>
-              <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                {a.current_balance == null ? <small style={{ color: "#6b7280" }}>press Refresh</small> : (
-                  <>
-                    <strong style={{ color: a.type === "loan" || a.type === "credit" ? "#b91c1c" : undefined }}>
-                      {a.type === "loan" || a.type === "credit" ? "owe " : ""}{money(Number(a.current_balance))}
-                    </strong>
-                    {a.available_balance != null && a.type === "depository" && Number(a.available_balance) !== Number(a.current_balance) && (
-                      <><br /><small style={{ color: "#6b7280" }}>available {money(Number(a.available_balance))}</small></>
-                    )}
-                  </>
-                )}
-              </span>
-            </div>
-          ))}
+    <section className="section">
+      <div className="sheet">
+        <div className="connect">
+          <ConnectBank session={session} onChange={onChange} />
+          <ConnectBank session={session} onChange={onChange} profile="wife" label="Connect wife's bank" />
         </div>
-      ))}
-      <p style={{ color: "#6b7280", margin: "6px 0" }}><small>Connected balances update each time you press Refresh, and banks may report them with a short delay. Accounts marked "from statement" update when a new statement is entered.</small></p>
+        {Object.entries(banks).sort().map(([bank, list]) => {
+          const ids = new Set(list.map((a) => a.id));
+          const last = txns.filter((t) => ids.has(t.account_id)).reduce((m, t) => (t.posted_date > m ? t.posted_date : m), "");
+          const stale = last && (Date.now() - new Date(last).getTime()) / 864e5 > 14;
+          const itemId = list.find((a) => a.plaid_item_id)?.plaid_item_id;
+          return (
+            <div key={bank} className="bank">
+              <div className="bank-head">
+                <span className="bank-name">{bank}</span>
+                <span className="acct-note">{list.length} {list.length === 1 ? "account" : "accounts"}</span>
+                {last && <span className={"acct-note" + (stale ? " stale" : "")}>{stale ? "No new activity since " : "Latest "}{last}</span>}
+                {itemId && <ReconnectBank session={session} item={{ item_id: itemId }} onDone={onChange} />}
+              </div>
+              {list.sort((x, y) => (order[x.type] || 9) - (order[y.type] || 9)).map((a) => {
+                const owe = a.type === "loan" || a.type === "credit";
+                const e = estimateLoan(a, txns);
+                return (
+                  <div key={a.id} className="acct">
+                    <div style={{ minWidth: 0 }}>
+                      <div>
+                        {a.name} {a.mask && <span className="acct-note">••{a.mask}</span>}{" "}
+                        {a.owner_person === "Wife" && <span className="tag wife">Wife</span>}{" "}
+                        {dupes.has(a.id) && <span className="tag">Duplicate, not counted</span>}
+                      </div>
+                      <div className="acct-note">
+                        {label(a)}
+                        {a.is_manual && `, from statement as of ${String(a.balance_updated_at || "").slice(0, 10)}`}
+                      </div>
+                      {a.is_manual && a.balance_note && <div className="acct-note">{a.balance_note}</div>}
+                      {a.institution === "Coinbase (holdings)" && crypto.length > 0 && (
+                        <div className="acct-note">
+                          {crypto.filter((h) => Number(h.last_value) >= 1).map((h) => `${h.symbol} ${Number(h.quantity)} = ${money(Number(h.last_value))}`).join(", ")}
+                          {crypto.some((h) => !(Number(h.last_value) >= 1)) && `, plus ${crypto.filter((h) => !(Number(h.last_value) >= 1)).length} coins under $1`}
+                        </div>
+                      )}
+                      {e && (
+                        <div className="acct-est">
+                          {e.payments
+                            ? `Estimated now ${money(e.balance)} after ${e.payments} payment${e.payments > 1 ? "s" : ""} since the statement (interest ${money(e.interest)}, principal ${money(e.principal)}, at ${(Number(a.apr) * 100).toFixed(2)}%)`
+                            : `No payments since the statement yet. Each ${money(Number(a.payment_amount))} payment will be split at ${(Number(a.apr) * 100).toFixed(2)}%.`}
+                        </div>
+                      )}
+                    </div>
+                    <div className={"acct-bal" + (owe ? " owe" : "")}>
+                      {a.current_balance == null ? <span className="acct-note">Press Refresh</span> : (
+                        <>
+                          {owe ? "owe " : ""}{money(Number(a.current_balance))}
+                          {a.available_balance != null && a.type === "depository" && Number(a.available_balance) !== Number(a.current_balance) && (
+                            <div className="acct-note">available {money(Number(a.available_balance))}</div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+        <p className="acct-note" style={{ padding: "8px 0" }}>Connected balances update when you press Refresh. Accounts marked "from statement" update when a new statement is entered.</p>
+      </div>
     </section>
   );
 }
@@ -528,166 +524,182 @@ function Dashboard({ session }) {
   const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); setDrill(null); setAllMerchants(false); };
   const toggleDrill = (kind, key) => setDrill(drill?.kind === kind && drill.key === key ? null : { kind, key });
   const catTotal = inCat.reduce((s, t) => s + Number(t.amount), 0) || 1;
+  const amountText = (t) => (t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount)));
+  const acctText = (t) => { const a = accounts[t.account_id]; return a ? `${a.name}${a.mask ? " ••" + a.mask : ""}` : ""; };
+  const shortDate = (d) => new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  // Purchases inside a store or type, with the "wrong section?" fix.
   const lines = (list) => (
-    <div style={{ margin: "2px 0 8px 10px" }}>
+    <div style={{ padding: "0 6px 6px" }}>
       {list.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
-        <div key={t.id} style={{ padding: "6px 4px", borderBottom: "1px dashed #e5e7eb", fontSize: 13 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <span>{t.posted_date.slice(5)} · {t.merchant}{accounts[t.account_id]?.mask ? <small style={{ color: "#6b7280" }}> ••{accounts[t.account_id].mask}</small> : null}</span>
-            <strong style={{ whiteSpace: "nowrap" }}>{money(Number(t.amount))}</strong>
+        <div key={t.id} className="txn">
+          <div className="txn-main">
+            <div className="txn-name">
+              {t.merchant}
+              <div className="txn-meta">{shortDate(t.posted_date)}{accounts[t.account_id]?.mask ? `, ••${accounts[t.account_id].mask}` : ""}</div>
+            </div>
+            <div className="txn-amt">{money(Number(t.amount))}</div>
           </div>
-          <label style={{ fontSize: 12, color: "#6b7280" }}>
-            Wrong section? Move to{" "}
+          <div className="txn-controls">
+            <span className="txn-meta">Wrong section? Move to</span>
             <select
+              className="pill-select"
               value={catOf(t)?.id || ""}
               onChange={(e) => { setCategory(t, e.target.value); setOffer({ txnId: t.id, merchant: merchantKey(t), catId: e.target.value }); }}
-              style={{ fontSize: 12, padding: "1px 2px", maxWidth: 170 }}
             >
               {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-          </label>
+          </div>
           {offer?.txnId === t.id && (
-            <div style={{ marginTop: 4, fontSize: 12, background: "#ecfdf5", padding: "4px 6px", borderRadius: 4 }}>
-              Moved. Do the same for every purchase from <b>{offer.merchant}</b>?{" "}
-              <button onClick={rememberForMerchant} style={{ fontSize: 12, padding: "1px 6px" }}>Yes, always</button>{" "}
-              <button onClick={() => setOffer(null)} style={{ fontSize: 12, padding: "1px 6px" }}>Just this one</button>
+            <div className="offer">
+              <span>Moved. Do the same for every purchase from <b>{offer.merchant}</b>?</span>
+              <button onClick={rememberForMerchant} className="btn btn-small btn-primary">Yes, always</button>
+              <button onClick={() => setOffer(null)} className="btn btn-small">Just this one</button>
             </div>
           )}
         </div>
       ))}
     </div>
   );
-  const row = (kind, g) => (
-    <div key={kind + g.key}>
-    <button
-      onClick={() => toggleDrill(kind, g.key)}
-      style={{ display: "flex", justifyContent: "space-between", width: "100%", gap: 8, textAlign: "left", background: drill?.kind === kind && drill.key === g.key ? "#e0e7ff" : "transparent", border: "none", borderBottom: "1px solid #eef2ff", padding: "5px 4px", cursor: "pointer", fontSize: 14 }}
-    >
-      <span>{g.key} <small style={{ color: "#6b7280" }}>×{g.count}</small></span>
-      <span style={{ whiteSpace: "nowrap" }}>{money(g.total)} <small style={{ color: "#6b7280" }}>{Math.round((g.total / catTotal) * 100)}%</small> {drill?.kind === kind && drill.key === g.key ? "▾" : "▸"}</span>
-    </button>
-    {drill?.kind === kind && drill.key === g.key && lines(shown)}
-    </div>
-  );
+  const row = (kind, g) => {
+    const open = drill?.kind === kind && drill.key === g.key;
+    return (
+      <div key={kind + g.key}>
+        <button className="drill-row" aria-expanded={open} onClick={() => toggleDrill(kind, g.key)}>
+          <span>{g.key}<span className="count">×{g.count}</span></span>
+          <span style={{ whiteSpace: "nowrap" }}>{money(g.total)}<span className="pct">{Math.round((g.total / catTotal) * 100)}%</span><span className="caret">{open ? "▾" : "▸"}</span></span>
+        </button>
+        {open && lines(shown)}
+      </div>
+    );
+  };
   const details = filterCat && (
-    <div style={{ margin: "4px 0 10px 12px", padding: "6px 8px", borderLeft: "3px solid #c7d2fe" }}>
+    <div className="drill">
       {subs.length > 1 && (
         <>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", margin: "2px 0" }}>BY TYPE</div>
+          <div className="drill-label">By type</div>
           {subs.map((g) => row("sub", g))}
         </>
       )}
-      <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", margin: "8px 0 2px" }}>WHERE</div>
+      <div className="drill-label">Where</div>
       {(allMerchants ? merchants : merchants.slice(0, 8)).map((g) => row("merchant", g))}
       {merchants.length > 8 && (
-        <button onClick={() => setAllMerchants(!allMerchants)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: "4px 0", fontSize: 13 }}>
-          {allMerchants ? "show top 8" : `show all ${merchants.length}`}
+        <button onClick={() => setAllMerchants(!allMerchants)} className="link" style={{ fontSize: 13, margin: "6px 6px 0" }}>
+          {allMerchants ? "Show top 8" : `Show all ${merchants.length} places`}
         </button>
       )}
     </div>
   );
 
+  const [dollars, cents] = money(spent).split(".");
+  const transfersCount = inPeriod.filter(transfer).length;
+  const dueStatements = Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6);
+  const filterName = filterCat ? cats.find((c) => c.id === filterCat)?.name + (drill ? " › " + drill.key : "")
+    : filterProp === "household" ? "Household" : props.find((p) => p.id === filterProp)?.name;
+
   return (
-    <main style={wrap}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 24 }}>Expenses</h1>
-        <button onClick={() => supabase.auth.signOut()} style={{ padding: "6px 10px" }}>Sign out</button>
-      </div>
+    <main className="app">
+      <header className="top">
+        <h1 className="brand">Expenses</h1>
+        <div className="top-actions">
+          <button onClick={() => setShowAccounts(!showAccounts)} className="btn" aria-pressed={showAccounts}>
+            {showAccounts ? "Close accounts" : `Accounts (${Object.keys(accounts).length})`}
+          </button>
+          <button onClick={refresh} className="btn btn-primary">Refresh</button>
+        </div>
+      </header>
+      {msg && <p className="status">{msg}</p>}
 
-      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-        <ConnectBank session={session} onChange={load} />
-        <ConnectBank session={session} onChange={load} profile="wife" label="Connect wife's bank" />
-        <button onClick={refresh} style={{ padding: "10px 14px", fontSize: 16, margin: "12px 0" }}>Refresh</button>
-      </div>
-      {msg && <p style={{ color: "#6b7280" }}>{msg}</p>}
-
-      <button onClick={() => setShowAccounts(!showAccounts)} style={{ padding: "6px 10px", marginBottom: 8 }}>
-        {showAccounts ? "Hide accounts" : `Connected accounts (${Object.keys(accounts).length})`}
-      </button>
       {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} dupes={dupes} />}
-      {Object.values(accounts).some((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6) && (
-        <p style={{ background: "#fef3c7", padding: "8px 10px", borderRadius: 6, fontSize: 14 }}>
-          📄 Time for a new statement: {Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6).map((a) => a.name).join(", ")}
-        </p>
+      {dueStatements.length > 0 && (
+        <p className="notice">Time for a new statement: {dueStatements.map((a) => a.name).join(", ")}</p>
       )}
 
       {txns === null ? (
-        <p>Loading...</p>
+        <p className="status">Loading...</p>
       ) : txns.length === 0 ? (
-        <p style={{ color: "#6b7280" }}>No transactions yet. Connect a bank to get started.</p>
+        <p className="status">No transactions yet. Open Accounts and connect a bank to get started.</p>
       ) : (
         <>
-          <select value={period} onChange={(e) => { setPeriod(e.target.value); pick(null, null); }} style={{ padding: 8, fontSize: 16, marginBottom: 8 }}>
-            {Object.entries(PERIODS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
+          <div className="periods" role="group" aria-label="Period">
+            {Object.entries(PERIODS).map(([k, v]) => (
+              <button key={k} className="chip" aria-pressed={period === k} onClick={() => { setPeriod(k); pick(null, null); }}>{v.label}</button>
+            ))}
+          </div>
 
-          <p style={{ fontSize: 20, fontWeight: 700, margin: "4px 0 2px", cursor: "pointer" }} onClick={() => pick(null, filterProp === "household" ? null : "household")}>
-            Household spent: {money(spent)}
-          </p>
-          <p style={{ color: "#6b7280", marginTop: 0 }}>
-            <button onClick={() => pick(null, filterProp === "transfers" ? null : "transfers")} style={{ border: "none", background: filterProp === "transfers" ? "#eef2ff" : "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: "2px 4px", fontSize: 13, borderRadius: 4 }}>
-              Not counted: {money(moved)} moved between your accounts ({inPeriod.filter(transfer).length}) · {filterProp === "transfers" ? "hide" : "review"}
+          <section className="hero">
+            <p className="hero-label">Household spent, {PERIODS[period].label.toLowerCase()}</p>
+            <button className="hero-amount" aria-pressed={filterProp === "household"} onClick={() => pick(null, filterProp === "household" ? null : "household")} title="Show household purchases">
+              {dollars}<span className="cents">.{cents}</span>
             </button>
-          </p>
+            <div className="moved">
+              {money(moved)} moved between your own accounts isn't counted.{" "}
+              <button className="link" onClick={() => pick(null, filterProp === "transfers" ? null : "transfers")}>
+                {filterProp === "transfers" ? "Hide" : `Review ${transfersCount}`}
+              </button>
+            </div>
+          </section>
+
           {filterProp === "transfers" && (
-            <section style={{ margin: "0 0 16px", border: "1px solid #e5e7eb", borderRadius: 8, padding: "4px 8px" }}>
-              {shown.length === 0 && <p style={{ fontSize: 13, color: "#6b7280" }}>Nothing left out in this period.</p>}
-              {shown.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderBottom: "1px solid #f3f4f6", fontSize: 13 }}>
-                  <span>
-                    {t.posted_date.slice(5)} · {t.merchant}
-                    {accounts[t.account_id]?.mask && <small style={{ color: "#6b7280" }}> ••{accounts[t.account_id].mask}</small>}
-                    <br />
-                    <small style={{ color: "#6b7280" }}>Why: {whyNot(t)}</small>
-                  </span>
-                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    <span style={{ color: t.amount < 0 ? "#15803d" : "#374151" }}>{t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}</span>
-                    <br />
-                    <button onClick={() => toggleTransfer(t)} style={{ fontSize: 11, padding: "1px 6px", marginTop: 2 }}>count it</button>
-                  </span>
-                </div>
-              ))}
+            <section className="section">
+              <div className="sheet">
+                {shown.length === 0 && <p className="status" style={{ padding: "10px 0" }}>Nothing left out in this period.</p>}
+                {shown.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
+                  <div key={t.id} className="txn">
+                    <div className="txn-main">
+                      <div className="txn-name">
+                        {t.merchant}
+                        <div className="txn-meta">{shortDate(t.posted_date)}{accounts[t.account_id]?.mask ? `, ••${accounts[t.account_id].mask}` : ""}</div>
+                        <div className="why">Why: {whyNot(t)}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className={"txn-amt" + (t.amount < 0 ? " in" : "")}>{amountText(t)}</div>
+                        <button onClick={() => toggleTransfer(t)} className="btn btn-small" style={{ marginTop: 4 }}>Count it</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 
-          <section style={{ margin: "12px 0 20px" }}>
-            {breakdown.map((c) => (
-              <div key={c.id}>
-              <button
-                key={c.id}
-                onClick={() => pick(filterCat === c.id ? null : c.id, null)}
-                style={{ display: "block", width: "100%", textAlign: "left", background: filterCat === c.id ? "#eef2ff" : "transparent", border: "none", padding: "6px 4px", cursor: "pointer", borderRadius: 6 }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15 }}>
-                  <span>{c.name}</span>
-                  <span>{money(c.total)} <small style={{ color: "#6b7280" }}>{Math.round((c.total / spent) * 100)}%</small></span>
+          <section className="section">
+            <div className="section-head">
+              <h2 className="section-title">Where it went</h2>
+              <span className="section-note">Tap a category for detail</span>
+            </div>
+            <div className="sheet">
+              {breakdown.map((c) => (
+                <div key={c.id}>
+                  <button className="cat" aria-expanded={filterCat === c.id} onClick={() => pick(filterCat === c.id ? null : c.id, null)}>
+                    <div className="cat-row">
+                      <span className="cat-name">{c.name}</span>
+                      <span className="cat-amt">{money(c.total)}<span className="pct">{Math.round((c.total / spent) * 100)}%</span></span>
+                    </div>
+                    <div className="bar"><i style={{ width: `${(c.total / top) * 100}%` }} /></div>
+                  </button>
+                  {filterCat === c.id && details}
                 </div>
-                <div style={{ height: 8, background: "#e5e7eb", borderRadius: 4, marginTop: 4 }}>
-                  <div style={{ height: 8, width: `${(c.total / top) * 100}%`, background: "#4f46e5", borderRadius: 4 }} />
-                </div>
-              </button>
-              {filterCat === c.id && details}
-              </div>
-            ))}
+              ))}
+            </div>
           </section>
 
-          <h2 style={{ fontSize: 17, margin: "8px 0 6px" }}>Properties</h2>
-          <section style={{ marginBottom: 20 }}>
-            {propRows.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => pick(null, filterProp === p.id ? null : p.id)}
-                style={{ display: "flex", justifyContent: "space-between", width: "100%", textAlign: "left", background: filterProp === p.id ? "#eef2ff" : "transparent", border: "none", borderBottom: "1px solid #e5e7eb", padding: "8px 4px", cursor: "pointer", gap: 8 }}
-              >
-                <span style={{ fontSize: 15 }}>{p.name}</span>
-                <span style={{ fontSize: 13, textAlign: "right", whiteSpace: "nowrap" }}>
-                  {p.income > 0 && <span style={{ color: "#15803d" }}>in {money(p.income)} · </span>}
-                  <span>out {money(p.costs)}</span>
-                  <br />
-                  <strong style={{ color: p.net >= 0 ? "#15803d" : "#b91c1c" }}>net {p.net >= 0 ? "+" : ""}{money(p.net)}</strong>
-                </span>
-              </button>
-            ))}
+          <section className="section">
+            <div className="section-head">
+              <h2 className="section-title">Properties</h2>
+              <span className="section-note">In, out and net</span>
+            </div>
+            <div className="sheet">
+              {propRows.map((p) => (
+                <button key={p.id} className="prop" aria-pressed={filterProp === p.id} onClick={() => pick(null, filterProp === p.id ? null : p.id)}>
+                  <span className="prop-name">{p.name}</span>
+                  <span className="prop-figs">
+                    <span className={"net " + (p.net >= 0 ? "pos" : "neg")}>{p.net >= 0 ? "+" : ""}{money(p.net)}</span>
+                    {p.income > 0 ? `in ${money(p.income)}, ` : ""}out {money(p.costs)}
+                  </span>
+                </button>
+              ))}
+            </div>
           </section>
 
           {(() => {
@@ -695,107 +707,77 @@ function Dashboard({ session }) {
             if (!rentRule) return null;
             const pays = liveTxns.filter((t) => t.amount > 0 && rentRule.re.test(t.merchant || ""));
             return (
-              <>
-                <h2 style={{ fontSize: 17, margin: "8px 0 6px" }}>Rent</h2>
-                <p style={{ color: "#6b7280", marginTop: 0 }}><small>{rentRule.note}. Paid on the 25th or later counts for next month. Only payments from connected accounts show here.</small></p>
-                <section style={{ marginBottom: 20 }}>
+              <section className="section">
+                <div className="section-head">
+                  <h2 className="section-title">Rent</h2>
+                  <span className="section-note">Paid on the 25th or later counts for next month</span>
+                </div>
+                <div className="months">
                   {rentMonths(pays).map((m) => {
                     const total = m.items.reduce((s, t) => s + Number(t.amount), 0);
                     return (
-                      <div key={m.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 4px", borderBottom: "1px solid #e5e7eb", fontSize: 14 }}>
-                        <span>{m.label}</span>
-                        {m.items.length ? (
-                          <span style={{ textAlign: "right" }}>
-                            <span style={{ color: "#15803d" }}>✓ {money(total)}</span>
-                            <br />
-                            <small style={{ color: "#6b7280" }}>
-                              {m.items.map((t) => `${t.posted_date}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}
-                            </small>
-                          </span>
-                        ) : (
-                          <span style={{ color: "#b45309" }}>not paid from these accounts</span>
-                        )}
+                      <div key={m.key} className={"month " + (m.items.length ? "paid" : "gap")} title={m.items.map((t) => `${t.posted_date}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}>
+                        <b>{m.label.replace(/ \d{4}$/, "")} <span className="count">{m.label.slice(-2)}</span></b>
+                        <span className="m-amt">{m.items.length ? money(total).replace(/\.\d\d$/, "") : "Not from these accounts"}</span>
                       </div>
                     );
                   })}
-                </section>
-              </>
+                </div>
+              </section>
             );
           })()}
 
-          {(filterCat || filterProp) && (
-            <p style={{ color: "#4f46e5" }}>
-              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name + (drill ? " › " + drill.key : "") : filterProp === "household" ? "Household" : filterProp === "transfers" ? "transactions NOT counted (tap 'count it' on any that should count)" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
-              <button onClick={() => pick(null, null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
-            </p>
-          )}
-
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {shown.map((t) => {
-              const acct = accounts[t.account_id];
-              const isT = transfer(t);
-              const cat = catOf(t);
-              return (
-                <li key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid #e5e7eb", opacity: isT ? 0.55 : 1 }}>
-                  <span style={{ minWidth: 0 }}>
-                    {t.merchant || "Unknown"}
-                    {t.pending && <small style={{ color: "#b45309" }}> · pending</small>}
-                    <br />
-                    <small style={{ color: "#6b7280" }}>
-                      {t.posted_date}
-                      {acct ? ` · ${acct.name}${acct.mask ? " ••" + acct.mask : ""}` : ""}
-                    </small>
-                    <br />
-                    {t.amount > 0 && !isT && (
-                      <select
-                        value={cat?.id || ""}
-                        onChange={(e) => setCategory(t, e.target.value)}
-                        style={{ marginTop: 4, fontSize: 13, padding: "2px 4px", maxWidth: "100%", border: "1px solid #d1d5db", borderRadius: 6, background: t.category_id ? "#eef2ff" : "#fff" }}
+          <section className="section">
+            <div className="section-head">
+              <h2 className="section-title">Transactions</h2>
+              <span className="section-note">{shown.length}</span>
+            </div>
+            {(filterCat || (filterProp && filterProp !== "transfers")) && (
+              <div className="filter">
+                <span>Showing {filterName} only</span>
+                <button onClick={() => pick(null, null)} className="link">Show all</button>
+              </div>
+            )}
+            <div className="sheet">
+              {(filterProp === "transfers" ? inPeriod : shown).map((t) => {
+                const isT = transfer(t);
+                const cat = catOf(t);
+                return (
+                  <div key={t.id} className="txn">
+                    <div className="txn-main">
+                      <div className="txn-name">
+                        {t.merchant || "Unknown"} {t.pending && <span className="tag pending">Pending</span>}
+                        <div className="txn-meta">{shortDate(t.posted_date)}{acctText(t) ? `, ${acctText(t)}` : ""}</div>
+                      </div>
+                      <div className={"txn-amt" + (isT ? " off" : t.amount < 0 ? " in" : "")}>{amountText(t)}</div>
+                    </div>
+                    <div className="txn-controls">
+                      {t.amount > 0 && !isT && (
+                        <select className={"pill-select" + (t.category_id ? " set" : "")} value={cat?.id || ""} onChange={(e) => setCategory(t, e.target.value)} aria-label="Category">
+                          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      )}
+                      {t.amount < 0 && !isT && <span className="tag">Money in</span>}
+                      {!isT && (
+                        <select className={"pill-select" + (t.property_id ? " set" : "")} value={propOf(t) || householdId || ""} onChange={(e) => setProperty(t, e.target.value)} aria-label="Belongs to">
+                          {householdId && <option value={householdId}>Household</option>}
+                          {realProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                      )}
+                      <button
+                        onClick={() => toggleTransfer(t)}
+                        className={"toggle" + (isT ? " on" : "")}
+                        title={isT ? "Tap to count this again" : "Tap if this is money moving between your own accounts"}
                       >
-                        {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
-                    )}
-                    {t.amount < 0 && !isT && <small style={{ color: "#15803d" }}>money in </small>}
-                    {!isT && (
-                      <select
-                        value={propOf(t) || householdId || ""}
-                        onChange={(e) => setProperty(t, e.target.value)}
-                        style={{ marginTop: 4, marginLeft: 4, fontSize: 13, padding: "2px 4px", maxWidth: "100%", border: "1px solid #d1d5db", borderRadius: 6, background: t.property_id ? "#eef2ff" : "#fff" }}
-                      >
-                        {householdId && <option value={householdId}>Household</option>}
-                        {realProps.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
-                    )}
-                  </span>
-                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    <strong style={{ color: isT ? "#9ca3af" : t.amount < 0 ? "#15803d" : undefined, textDecoration: isT ? "line-through" : undefined }}>
-                      {t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}
-                    </strong>
-                    <br />
-                    <button
-                      onClick={() => toggleTransfer(t)}
-                      title={isT ? "Tap to count this again" : "Tap if this is money moving between your own accounts"}
-                      style={{ marginTop: 4, padding: "2px 8px", fontSize: 11, border: isT ? "1px solid #d1d5db" : "1px dashed #d1d5db", borderRadius: 12, background: isT ? "#e5e7eb" : "#fff", color: isT ? "#374151" : "#9ca3af" }}
-                    >
-                      {isT ? "↔ Transfer, not counted" : "mark as transfer"}
-                    </button>
-                    {isT && (
-                      <>
-                        <br />
-                        <small style={{ color: "#6b7280", whiteSpace: "normal" }}>Why: {whyNot(t)}</small>
-                        {filterProp === "transfers" && (
-                          <>
-                            {" "}
-                            <button onClick={() => toggleTransfer(t)} style={{ fontSize: 11, padding: "1px 6px" }}>count it</button>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+                        {isT ? "Transfer, not counted" : "Mark as transfer"}
+                      </button>
+                      {isT && <span className="why">Why: {whyNot(t)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         </>
       )}
     </main>
