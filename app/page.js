@@ -133,6 +133,41 @@ const likeToRegex = (pattern) =>
 
 // Estimate a fixed-rate loan from its last statement: each matching payment after the statement date
 // pays that period's interest (balance x rate x days / 365) first, and the rest reduces the balance.
+// Level 2: Plaid's detailed label without its broad prefix, e.g. GENERAL_MERCHANDISE_SUPERSTORES -> "Superstores".
+const titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-\/&])\w/g, (c) => c.toUpperCase());
+function subLabel(t) {
+  const d = t.plaid_category_detailed || "";
+  const p = t.plaid_category || "";
+  if (!d) return "Other";
+  return titleCase((d.startsWith(p + "_") ? d.slice(p.length + 1) : d).replace(/_/g, " "));
+}
+
+// Group store variants together: "SAFEWAY #1234 SAN JOSE" and "Safeway" -> "Safeway".
+function merchantKey(t) {
+  const m = (t.merchant || "Unknown")
+    .replace(/^(sq|tst|sp|pp|paypal)\s*\*\s*/i, "")
+    .replace(/\s*(#|store\s*#?|no\.?)\s*\d+.*$/i, "")
+    .replace(/\s+\d{3,}.*$/, "")
+    .replace(/[*].*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const name = titleCase(m || "Unknown");
+  const alias = [[/^amzn|^amazon/i, "Amazon"], [/^costco/i, "Costco"], [/^wal-?mart/i, "Walmart"], [/^target\b/i, "Target"], [/^uber\s*eats/i, "Uber Eats"], [/^uber\b/i, "Uber"], [/^lyft/i, "Lyft"], [/^safeway/i, "Safeway"], [/^whole\s*foods|^wfm/i, "Whole Foods"], [/^trader\s*joe/i, "Trader Joe's"]];
+  for (const [re, to] of alias) if (re.test(name)) return to;
+  return name;
+}
+
+function groupBy(list, keyFn) {
+  const out = {};
+  for (const t of list) {
+    const k = keyFn(t);
+    out[k] = out[k] || { key: k, total: 0, count: 0 };
+    out[k].total += Number(t.amount);
+    out[k].count += 1;
+  }
+  return Object.values(out).sort((a, b) => b.total - a.total);
+}
+
 function estimateLoan(account, txns) {
   if (!account.is_manual || !account.apr || !account.payment_amount || account.current_balance == null) return null;
   const re = likeToRegex(account.payment_pattern || "%");
@@ -266,6 +301,8 @@ function Dashboard({ session }) {
   const [filterProp, setFilterProp] = useState(null); // null = all, "household", or a property id
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
+  const [drill, setDrill] = useState(null); // { kind: "sub" | "merchant", key } inside the chosen category
+  const [allMerchants, setAllMerchants] = useState(false);
   const [msg, setMsg] = useState("");
   const [showAccounts, setShowAccounts] = useState(false);
 
@@ -381,10 +418,46 @@ function Dashboard({ session }) {
   const top = breakdown[0]?.total || 1;
 
   let shown = inPeriod;
-  if (filterCat) shown = spending.filter((t) => catOf(t)?.id === filterCat);
+  const inCat = filterCat ? spending.filter((t) => catOf(t)?.id === filterCat) : [];
+  const subs = groupBy(inCat, subLabel);
+  const merchants = groupBy(inCat, merchantKey);
+  if (filterCat) {
+    shown = inCat;
+    if (drill?.kind === "sub") shown = inCat.filter((t) => subLabel(t) === drill.key);
+    if (drill?.kind === "merchant") shown = inCat.filter((t) => merchantKey(t) === drill.key);
+  }
   else if (filterProp === "household") shown = household;
   else if (filterProp) shown = real.filter((t) => propOf(t) === filterProp);
-  const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); };
+  const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); setDrill(null); setAllMerchants(false); };
+  const toggleDrill = (kind, key) => setDrill(drill?.kind === kind && drill.key === key ? null : { kind, key });
+  const catTotal = inCat.reduce((s, t) => s + Number(t.amount), 0) || 1;
+  const row = (kind, g) => (
+    <button
+      key={kind + g.key}
+      onClick={() => toggleDrill(kind, g.key)}
+      style={{ display: "flex", justifyContent: "space-between", width: "100%", gap: 8, textAlign: "left", background: drill?.kind === kind && drill.key === g.key ? "#e0e7ff" : "transparent", border: "none", borderBottom: "1px solid #eef2ff", padding: "5px 4px", cursor: "pointer", fontSize: 14 }}
+    >
+      <span>{g.key} <small style={{ color: "#6b7280" }}>×{g.count}</small></span>
+      <span style={{ whiteSpace: "nowrap" }}>{money(g.total)} <small style={{ color: "#6b7280" }}>{Math.round((g.total / catTotal) * 100)}%</small></span>
+    </button>
+  );
+  const details = filterCat && (
+    <div style={{ margin: "4px 0 10px 12px", padding: "6px 8px", borderLeft: "3px solid #c7d2fe" }}>
+      {subs.length > 1 && (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", margin: "2px 0" }}>BY TYPE</div>
+          {subs.map((g) => row("sub", g))}
+        </>
+      )}
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", margin: "8px 0 2px" }}>WHERE</div>
+      {(allMerchants ? merchants : merchants.slice(0, 8)).map((g) => row("merchant", g))}
+      {merchants.length > 8 && (
+        <button onClick={() => setAllMerchants(!allMerchants)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: "4px 0", fontSize: 13 }}>
+          {allMerchants ? "show top 8" : `show all ${merchants.length}`}
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <main style={wrap}>
@@ -427,6 +500,7 @@ function Dashboard({ session }) {
 
           <section style={{ margin: "12px 0 20px" }}>
             {breakdown.map((c) => (
+              <div key={c.id}>
               <button
                 key={c.id}
                 onClick={() => pick(filterCat === c.id ? null : c.id, null)}
@@ -440,6 +514,8 @@ function Dashboard({ session }) {
                   <div style={{ height: 8, width: `${(c.total / top) * 100}%`, background: "#4f46e5", borderRadius: 4 }} />
                 </div>
               </button>
+              {filterCat === c.id && details}
+              </div>
             ))}
           </section>
 
@@ -497,7 +573,7 @@ function Dashboard({ session }) {
 
           {(filterCat || filterProp) && (
             <p style={{ color: "#4f46e5" }}>
-              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name : filterProp === "household" ? "Household" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
+              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name + (drill ? " › " + drill.key : "") : filterProp === "household" ? "Household" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
               <button onClick={() => pick(null, null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
             </p>
           )}
