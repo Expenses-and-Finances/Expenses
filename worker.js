@@ -99,17 +99,18 @@ async function syncItem(env, item) {
     await db(env, "PATCH", `plaid_items?item_id=eq.${encodeURIComponent(item.item_id)}`, { access_token: await encryptToken(env, accessToken) });
   }
   let cursor = item.sync_cursor || undefined;
-  let added = [], modified = [], removed = [], accounts = [];
+  let added = [], modified = [], removed = [];
   for (let page = 0; page < 10; page++) {
     const data = await plaid(env, "/transactions/sync", { access_token: accessToken, cursor, count: 500 });
     added = added.concat(data.added);
     modified = modified.concat(data.modified);
     removed = removed.concat(data.removed);
-    accounts = data.accounts || accounts;
     cursor = data.next_cursor;
     if (!data.has_more) break;
   }
 
+  // Ask Plaid for every account on this login (checking, savings, loans, mortgages...), not just the ones in this batch.
+  const { accounts } = await plaid(env, "/accounts/get", { access_token: accessToken });
   const accountIds = {};
   if (accounts.length) {
     const rows = await db(env, "POST", "accounts?on_conflict=plaid_account_id", accounts.map((a) => ({
@@ -129,6 +130,7 @@ async function syncItem(env, item) {
     auto_transfer: isTransfer(t),
     plaid_category_detailed: t.personal_finance_category?.detailed || null,
     plaid_transaction_id: t.transaction_id,
+    plaid_account_id: t.account_id,
     account_id: accountIds[t.account_id] || null,
     posted_date: t.date,
     merchant: t.merchant_name || t.name,
