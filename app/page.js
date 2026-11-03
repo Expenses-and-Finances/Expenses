@@ -626,9 +626,29 @@ function Dashboard({ session }) {
           </p>
           <p style={{ color: "#6b7280", marginTop: 0 }}>
             <button onClick={() => pick(null, filterProp === "transfers" ? null : "transfers")} style={{ border: "none", background: filterProp === "transfers" ? "#eef2ff" : "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: "2px 4px", fontSize: 13, borderRadius: 4 }}>
-              Not counted: {money(moved)} moved between your accounts ({inPeriod.filter(transfer).length}) · review
+              Not counted: {money(moved)} moved between your accounts ({inPeriod.filter(transfer).length}) · {filterProp === "transfers" ? "hide" : "review"}
             </button>
           </p>
+          {filterProp === "transfers" && (
+            <section style={{ margin: "0 0 16px", border: "1px solid #e5e7eb", borderRadius: 8, padding: "4px 8px" }}>
+              {shown.length === 0 && <p style={{ fontSize: 13, color: "#6b7280" }}>Nothing left out in this period.</p>}
+              {shown.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
+                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderBottom: "1px solid #f3f4f6", fontSize: 13 }}>
+                  <span>
+                    {t.posted_date.slice(5)} · {t.merchant}
+                    {accounts[t.account_id]?.mask && <small style={{ color: "#6b7280" }}> ••{accounts[t.account_id].mask}</small>}
+                    <br />
+                    <small style={{ color: "#6b7280" }}>Why: {whyNot(t)}</small>
+                  </span>
+                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <span style={{ color: t.amount < 0 ? "#15803d" : "#374151" }}>{t.amount < 0 ? "+" + money(-Number(t.amount)) : money(Number(t.amount))}</span>
+                    <br />
+                    <button onClick={() => toggleTransfer(t)} style={{ fontSize: 11, padding: "1px 6px", marginTop: 2 }}>count it</button>
+                  </span>
+                </div>
+              ))}
+            </section>
+          )}
 
           <section style={{ margin: "12px 0 20px" }}>
             {breakdown.map((c) => (
