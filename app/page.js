@@ -401,6 +401,16 @@ function Dashboard({ session }) {
   // Your manual choice wins, then a payee rule, then the automatic label from the bank sync.
   const autoTransfer = (t) => ruleFor(t)?.is_transfer ?? t.auto_transfer;
   const transfer = (t) => (t.is_transfer ?? autoTransfer(t)) === true;
+  // Why a transaction is left out of the totals, in plain words.
+  const whyNot = (t) => {
+    if (t.is_transfer === true) return "you marked it";
+    const r = ruleFor(t);
+    if (r?.is_transfer) return r.note || "your rule";
+    if (t.plaid_category_detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT") return "credit card payment";
+    if (t.plaid_category === "LOAN_PAYMENTS") return "loan principal paydown";
+    if (t.plaid_category === "TRANSFER_IN" || t.plaid_category === "TRANSFER_OUT") return "bank says: between your accounts";
+    return "marked automatically";
+  };
 
   // Automatic category: a specific Plaid label beats a broad one; anything unmatched goes to "Other".
   const byCode = {};
@@ -512,6 +522,7 @@ function Dashboard({ session }) {
     if (drill?.kind === "sub") shown = inCat.filter((t) => subOf(t) === drill.key);
     if (drill?.kind === "merchant") shown = inCat.filter((t) => merchantKey(t) === drill.key);
   }
+  else if (filterProp === "transfers") shown = inPeriod.filter(transfer);
   else if (filterProp === "household") shown = household;
   else if (filterProp) shown = real.filter((t) => propOf(t) === filterProp);
   const pick = (cat, prop) => { setFilterCat(cat); setFilterProp(prop); setDrill(null); setAllMerchants(false); };
@@ -613,7 +624,11 @@ function Dashboard({ session }) {
           <p style={{ fontSize: 20, fontWeight: 700, margin: "4px 0 2px", cursor: "pointer" }} onClick={() => pick(null, filterProp === "household" ? null : "household")}>
             Household spent: {money(spent)}
           </p>
-          <p style={{ color: "#6b7280", marginTop: 0 }}><small>Not counted: {money(moved)} moved between your accounts</small></p>
+          <p style={{ color: "#6b7280", marginTop: 0 }}>
+            <button onClick={() => pick(null, filterProp === "transfers" ? null : "transfers")} style={{ border: "none", background: filterProp === "transfers" ? "#eef2ff" : "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: "2px 4px", fontSize: 13, borderRadius: 4 }}>
+              Not counted: {money(moved)} moved between your accounts ({inPeriod.filter(transfer).length}) · review
+            </button>
+          </p>
 
           <section style={{ margin: "12px 0 20px" }}>
             {breakdown.map((c) => (
@@ -690,7 +705,7 @@ function Dashboard({ session }) {
 
           {(filterCat || filterProp) && (
             <p style={{ color: "#4f46e5" }}>
-              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name + (drill ? " › " + drill.key : "") : filterProp === "household" ? "Household" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
+              Showing {filterCat ? cats.find((c) => c.id === filterCat)?.name + (drill ? " › " + drill.key : "") : filterProp === "household" ? "Household" : filterProp === "transfers" ? "transactions NOT counted (tap 'count it' on any that should count)" : props.find((p) => p.id === filterProp)?.name} only ·{" "}
               <button onClick={() => pick(null, null)} style={{ border: "none", background: "none", color: "#4f46e5", textDecoration: "underline", cursor: "pointer", padding: 0 }}>show all</button>
             </p>
           )}
@@ -744,6 +759,18 @@ function Dashboard({ session }) {
                     >
                       {isT ? "↔ Transfer, not counted" : "mark as transfer"}
                     </button>
+                    {isT && (
+                      <>
+                        <br />
+                        <small style={{ color: "#6b7280", whiteSpace: "normal" }}>Why: {whyNot(t)}</small>
+                        {filterProp === "transfers" && (
+                          <>
+                            {" "}
+                            <button onClick={() => toggleTransfer(t)} style={{ fontSize: 11, padding: "1px 6px" }}>count it</button>
+                          </>
+                        )}
+                      </>
+                    )}
                   </span>
                 </li>
               );
