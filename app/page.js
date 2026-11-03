@@ -629,8 +629,14 @@ function Dashboard({ session }) {
   // as a payment received on one of the connected cards (same amount, within 5 days), and the other way round.
   const isBank = (t) => accounts[t.account_id]?.type === "depository";
   const isCard = (t) => accounts[t.account_id]?.type === "credit";
-  const looksLikeCardPayment = (t) =>
-    t.plaid_category_detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" || /card/i.test(ruleFor(t)?.note || "");
+  const looksLikeCardPayment = (t) => !/zelle/i.test(t.merchant || "") &&
+    (t.plaid_category_detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" || /card/i.test(ruleFor(t)?.note || ""));
+  // "ACH Debit WELLS FARGO CARD - CCPYMT" -> "Wells Fargo Card"
+  const payee = (t) => titleCase((t.merchant || "Unknown")
+    .replace(/^(ach|online|web)\s+(debit|withdrawal|pmt|payment)\s*/i, "")
+    .replace(/\s+-\s+.*$/, "")
+    .replace(/\b(autopay|auto pay|payment|pymt|ccpymt|epay|online|mobile|recurring|thank you)\b.*$/i, "")
+    .trim() || t.merchant);
   const bankPays = liveTxns.filter((t) => isBank(t) && t.amount > 0 && looksLikeCardPayment(t));
   const cardGets = liveTxns.filter((t) => isCard(t) && t.amount < 0 && (transfer(t) || looksLikeCardPayment(t)));
   const matchOf = {};
@@ -718,23 +724,40 @@ function Dashboard({ session }) {
                 </span>
                 <span className="caret">{showCardCheck ? "▾" : "▸"}</span>
               </button>
-              {showCardCheck && (unmatchedBank.length + unmatchedCard.length > 0) && (
-                <div className="sheet" style={{ marginTop: 8 }}>
-                  {[...unmatchedBank, ...unmatchedCard].sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
-                    <div key={t.id} className="txn">
-                      <div className="txn-main">
-                        <div className="txn-name">
-                          {t.merchant}
-                          <div className="txn-meta">{shortDate(t.posted_date)}, {acctText(t)}</div>
-                          <div className="why flag">{cardIssue(t)}</div>
-                        </div>
-                        <div className={"txn-amt" + (t.amount < 0 ? " in" : "")}>{amountText(t)}</div>
-                      </div>
-                    </div>
-                  ))}
-                  <p className="acct-note" style={{ padding: "8px 0" }}>Usually this means the card or bank isn't connected yet (for example your wife's cards, or Stanford while it's stuck). Anything else is worth checking.</p>
-                </div>
-              )}
+              {showCardCheck && (unmatchedBank.length + unmatchedCard.length > 0) && (() => {
+                const groups = {};
+                for (const t of unmatchedBank) {
+                  const k = "b:" + payee(t);
+                  (groups[k] = groups[k] || { title: `Paid to ${payee(t)}`, note: "No connected card received these. Is this card connected?", items: [] }).items.push(t);
+                }
+                for (const t of unmatchedCard) {
+                  const k = "c:" + t.account_id;
+                  (groups[k] = groups[k] || { title: `Payments into ${acctText(t)}`, note: "Paid from an account the app doesn't see (for example Stanford while it's stuck).", items: [] }).items.push(t);
+                }
+                const list = Object.entries(groups).map(([k, g]) => ({ k, ...g, total: g.items.reduce((s, t) => s + Math.abs(Number(t.amount)), 0), last: g.items.reduce((m, t) => (t.posted_date > m ? t.posted_date : m), "") }))
+                  .sort((a, b) => b.total - a.total);
+                return (
+                  <div className="sheet" style={{ marginTop: 8 }}>
+                    {list.map((g) => (
+                      <details key={g.k} className="txn">
+                        <summary className="txn-main" style={{ cursor: "pointer", listStyle: "none" }}>
+                          <div className="txn-name">
+                            {g.title}
+                            <div className="txn-meta">{g.items.length} payment{g.items.length > 1 ? "s" : ""}, latest {shortDate(g.last)}</div>
+                            <div className="why flag">{g.note}</div>
+                          </div>
+                          <div className="txn-amt">{money(g.total)}</div>
+                        </summary>
+                        {g.items.slice().sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
+                          <div key={t.id} className="txn-meta" style={{ display: "flex", justifyContent: "space-between", padding: "3px 0 3px 10px" }}>
+                            <span>{shortDate(t.posted_date)}, {acctText(t)}</span><span>{money(Math.abs(Number(t.amount)))}</span>
+                          </div>
+                        ))}
+                      </details>
+                    ))}
+                  </div>
+                );
+              })()}
             </section>
           )}
 
