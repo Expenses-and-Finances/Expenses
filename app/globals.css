@@ -171,3 +171,11 @@ button { cursor: pointer; }
 .cat-icon { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--green-soft); color: var(--green); }
 .cat[aria-expanded="true"] .cat-icon { background: var(--brass-soft); color: #8a6a12; }
 .drill { margin-left: 18px; }
+
+/* Card payments check */
+.check { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border: 0; border-radius: 14px; padding: 12px 14px; background: var(--sheet); }
+.check-dot { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+.check.ok .check-dot { background: var(--green-soft); color: var(--green); }
+.check.warn .check-dot { background: var(--brass-soft); color: #8a6a12; }
+.why.flag { color: #8a6a12; }
+.why.flag::before { content: "⚠ "; }

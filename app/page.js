@@ -381,6 +381,7 @@ function Dashboard({ session }) {
   const [allMerchants, setAllMerchants] = useState(false);
   const [msg, setMsg] = useState("");
   const [showAccounts, setShowAccounts] = useState(false);
+  const [showCardCheck, setShowCardCheck] = useState(false);
 
   async function load() {
     const [a, c, p, cr, r, t] = await Promise.all([
@@ -624,6 +625,36 @@ function Dashboard({ session }) {
     </div>
   );
 
+  // Card payments check: every payment leaving a bank account toward a card should show up
+  // as a payment received on one of the connected cards (same amount, within 5 days), and the other way round.
+  const isBank = (t) => accounts[t.account_id]?.type === "depository";
+  const isCard = (t) => accounts[t.account_id]?.type === "credit";
+  const looksLikeCardPayment = (t) =>
+    t.plaid_category_detailed === "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" || /card/i.test(ruleFor(t)?.note || "");
+  const bankPays = liveTxns.filter((t) => isBank(t) && t.amount > 0 && looksLikeCardPayment(t));
+  const cardGets = liveTxns.filter((t) => isCard(t) && t.amount < 0 && (transfer(t) || looksLikeCardPayment(t)));
+  const matchOf = {};
+  {
+    const used = new Set();
+    const days = (a, b) => Math.abs(new Date(a) - new Date(b)) / 864e5;
+    for (const b of bankPays.slice().sort((x, y) => x.posted_date.localeCompare(y.posted_date))) {
+      const c = cardGets
+        .filter((c) => !used.has(c.id) && Math.abs(Number(b.amount) + Number(c.amount)) < 0.01 && days(b.posted_date, c.posted_date) <= 5)
+        .sort((x, y) => days(b.posted_date, x.posted_date) - days(b.posted_date, y.posted_date))[0];
+      if (c) { used.add(c.id); matchOf[b.id] = c; matchOf[c.id] = b; }
+    }
+  }
+  const recent = (t) => (Date.now() - new Date(t.posted_date)) / 864e5 < 4;
+  const unmatchedBank = bankPays.filter((t) => !matchOf[t.id] && t.posted_date >= from && t.posted_date <= to);
+  const unmatchedCard = cardGets.filter((t) => !matchOf[t.id] && t.posted_date >= from && t.posted_date <= to);
+  const matchedCount = bankPays.filter((t) => matchOf[t.id] && t.posted_date >= from && t.posted_date <= to).length;
+  const cardIssue = (t) => {
+    if (matchOf[t.id]) return null;
+    if (isBank(t)) return recent(t) ? "No matching card payment yet (may still be posting)" : "No matching payment on any connected card";
+    if (isCard(t)) return recent(t) ? "No matching bank payment yet" : "Paid from an account the app doesn't see";
+    return null;
+  };
+
   const [dollars, cents] = money(spent).split(".");
   const transfersCount = inPeriod.filter(transfer).length;
   const dueStatements = Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6);
@@ -673,6 +704,40 @@ function Dashboard({ session }) {
             </div>
           </section>
 
+          {(bankPays.length > 0 || cardGets.length > 0) && (
+            <section className="section">
+              <button className={"check" + (unmatchedBank.length + unmatchedCard.length ? " warn" : " ok")} onClick={() => setShowCardCheck(!showCardCheck)} aria-expanded={showCardCheck}>
+                <span className="check-dot" aria-hidden="true">{unmatchedBank.length + unmatchedCard.length ? "!" : "✓"}</span>
+                <span style={{ flex: 1 }}>
+                  <b>Card payments check</b>
+                  <span className="txn-meta" style={{ display: "block" }}>
+                    {unmatchedBank.length + unmatchedCard.length
+                      ? `${matchedCount} matched, ${unmatchedBank.length + unmatchedCard.length} need a look`
+                      : `All ${matchedCount} card payments match a connected card`}
+                  </span>
+                </span>
+                <span className="caret">{showCardCheck ? "▾" : "▸"}</span>
+              </button>
+              {showCardCheck && (unmatchedBank.length + unmatchedCard.length > 0) && (
+                <div className="sheet" style={{ marginTop: 8 }}>
+                  {[...unmatchedBank, ...unmatchedCard].sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1)).map((t) => (
+                    <div key={t.id} className="txn">
+                      <div className="txn-main">
+                        <div className="txn-name">
+                          {t.merchant}
+                          <div className="txn-meta">{shortDate(t.posted_date)}, {acctText(t)}</div>
+                          <div className="why flag">{cardIssue(t)}</div>
+                        </div>
+                        <div className={"txn-amt" + (t.amount < 0 ? " in" : "")}>{amountText(t)}</div>
+                      </div>
+                    </div>
+                  ))}
+                  <p className="acct-note" style={{ padding: "8px 0" }}>Usually this means the card or bank isn't connected yet (for example your wife's cards, or Stanford while it's stuck). Anything else is worth checking.</p>
+                </div>
+              )}
+            </section>
+          )}
+
           {filterProp === "transfers" && (
             <section className="section">
               <div className="sheet">
@@ -684,6 +749,7 @@ function Dashboard({ session }) {
                         {t.merchant}
                         <div className="txn-meta">{shortDate(t.posted_date)}{accounts[t.account_id]?.mask ? `, ••${accounts[t.account_id].mask}` : ""}</div>
                         <div className="why">Why: {whyNot(t)}</div>
+                        {cardIssue(t) && <div className="why flag">{cardIssue(t)}</div>}
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div className={"txn-amt" + (t.amount < 0 ? " in" : "")}>{amountText(t)}</div>
