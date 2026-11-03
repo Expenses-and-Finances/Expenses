@@ -160,7 +160,7 @@ const likeToRegex = (pattern) =>
 // Estimate a fixed-rate loan from its last statement: each matching payment after the statement date
 // pays that period's interest (balance x rate x days / 365) first, and the rest reduces the balance.
 // Level 2: Plaid's detailed label without its broad prefix, e.g. GENERAL_MERCHANDISE_SUPERSTORES -> "Superstores".
-const titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-\/&])\w/g, (c) => c.toUpperCase());
+const titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-\/&])\w/g, (c) => c.toUpperCase()).replace(/ (And|Or|Of|The|For|To|In) /g, (w) => w.toLowerCase());
 function subLabel(t) {
   const d = t.plaid_category_detailed || "";
   const p = t.plaid_category || "";
@@ -329,6 +329,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
           );
         })}
         <p className="acct-note" style={{ padding: "8px 0" }}>Connected balances update when you press Refresh. Accounts marked "from statement" update when a new statement is entered.</p>
+        <p style={{ padding: "0 0 10px", margin: 0 }}><button onClick={() => supabase.auth.signOut()} className="btn btn-small btn-quiet">Sign out</button></p>
       </div>
     </section>
   );
@@ -694,8 +695,12 @@ function Dashboard({ session }) {
                 <button key={p.id} className="prop" aria-pressed={filterProp === p.id} onClick={() => pick(null, filterProp === p.id ? null : p.id)}>
                   <span className="prop-name">{p.name}</span>
                   <span className="prop-figs">
-                    <span className={"net " + (p.net >= 0 ? "pos" : "neg")}>{p.net >= 0 ? "+" : ""}{money(p.net)}</span>
-                    {p.income > 0 ? `in ${money(p.income)}, ` : ""}out {money(p.costs)}
+                    {p.count === 0 ? "No activity" : (
+                      <>
+                        <span className={"net " + (p.net >= 0 ? "pos" : "neg")}>{p.net >= 0 ? "+" : ""}{money(p.net)}</span>
+                        {p.income > 0 ? `in ${money(p.income)}, ` : ""}out {money(p.costs)}
+                      </>
+                    )}
                   </span>
                 </button>
               ))}
@@ -710,15 +715,15 @@ function Dashboard({ session }) {
               <section className="section">
                 <div className="section-head">
                   <h2 className="section-title">Rent</h2>
-                  <span className="section-note">Paid on the 25th or later counts for next month</span>
+                  <span className="section-note">Paid on the 25th or later counts for the next month</span>
                 </div>
                 <div className="months">
-                  {rentMonths(pays).map((m) => {
+                  {rentMonths(pays).reverse().map((m) => {
                     const total = m.items.reduce((s, t) => s + Number(t.amount), 0);
                     return (
                       <div key={m.key} className={"month " + (m.items.length ? "paid" : "gap")} title={m.items.map((t) => `${t.posted_date}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}>
-                        <b>{m.label.replace(/ \d{4}$/, "")} <span className="count">{m.label.slice(-2)}</span></b>
-                        <span className="m-amt">{m.items.length ? money(total).replace(/\.\d\d$/, "") : "Not from these accounts"}</span>
+                        <b>{m.label.replace(/ \d{4}$/, "")} <span className="count">’{m.label.slice(-2)}</span></b>
+                        <span className="m-amt">{m.items.length ? money(total).replace(/\.\d\d$/, "") : "Not found"}</span>
                       </div>
                     );
                   })}
