@@ -265,7 +265,7 @@ async function loadAllTransactions() {
 
 // Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
 // Loans and credit cards show what you owe.
-function AccountsList({ accounts, txns, crypto = [], session, onChange }) {
+function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = new Set() }) {
   const banks = {};
   for (const a of accounts) (banks[a.institution || "Other"] = banks[a.institution || "Other"] || []).push(a);
   const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
@@ -292,6 +292,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange }) {
               <span>
                 {a.name} {a.mask && <span style={{ color: "#6b7280" }}>••{a.mask}</span>}
                 {a.owner_person === "Wife" && <small style={{ marginLeft: 6, padding: "0 6px", borderRadius: 8, background: "#fce7f3", color: "#9d174d" }}>Wife</small>}
+                {dupes.has(a.id) && <small style={{ marginLeft: 6, padding: "0 6px", borderRadius: 8, background: "#f3f4f6", color: "#6b7280" }}>duplicate, not counted</small>}
                 <br />
                 <small style={{ color: "#6b7280" }}>
                   {label(a)}
@@ -414,7 +415,7 @@ function Dashboard({ session }) {
   // Belongs to: your manual choice, else a matched loan payment, else the account's property, else Household (null).
   // "Household" is a real choice so a property item can be moved back to it.
   const householdId = props.find((p) => p.name === "Household")?.id;
-  const autoProp = (t) => ruleFor(t)?.property_id || t.auto_property_id || accounts[t.account_id]?.property_id || null;
+  const autoProp = (t) => ruleFor(t)?.property_id || t.auto_property_id || accounts[t.account_id]?.property_id || inheritedProp[t.account_id] || null;
   const rawProp = (t) => t.property_id || autoProp(t);
   const propOf = (t) => { const p = rawProp(t); return p === householdId ? null : p; };
   const realProps = props.filter((p) => p.id !== householdId);
@@ -459,7 +460,29 @@ function Dashboard({ session }) {
   }
 
   const [from, to] = PERIODS[period].range();
-  const inPeriod = (txns || []).filter((t) => t.posted_date >= from && t.posted_date <= to);
+  // The same bank account connected twice (e.g. a joint account through both Plaid logins):
+  // use whichever connection has the newest transactions, ignore the other one.
+  const dupes = new Set();
+  const inheritedProp = {};
+  {
+    const latest = {};
+    for (const t of txns || []) if (!latest[t.account_id] || t.posted_date > latest[t.account_id]) latest[t.account_id] = t.posted_date;
+    const groups = {};
+    for (const a of Object.values(accounts)) {
+      if (a.is_manual || !a.mask) continue;
+      const k = (a.institution || "") + "|" + a.mask + "|" + (a.type || "");
+      (groups[k] = groups[k] || []).push(a);
+    }
+    for (const list of Object.values(groups)) {
+      if (list.length < 2) continue;
+      list.sort((x, y) => (latest[y.id] || "").localeCompare(latest[x.id] || "") || (x.owner_person === "Wife") - (y.owner_person === "Wife"));
+      for (const a of list.slice(1)) dupes.add(a.id);
+      const withProp = list.find((a) => a.property_id);
+      if (withProp && !list[0].property_id) inheritedProp[list[0].id] = withProp.property_id;
+    }
+  }
+  const liveTxns = (txns || []).filter((t) => !dupes.has(t.account_id));
+  const inPeriod = liveTxns.filter((t) => t.posted_date >= from && t.posted_date <= to);
   const real = inPeriod.filter((t) => !transfer(t));
   const household = real.filter((t) => !propOf(t));
   const spending = household.filter((t) => t.amount > 0);
@@ -570,7 +593,7 @@ function Dashboard({ session }) {
       <button onClick={() => setShowAccounts(!showAccounts)} style={{ padding: "6px 10px", marginBottom: 8 }}>
         {showAccounts ? "Hide accounts" : `Connected accounts (${Object.keys(accounts).length})`}
       </button>
-      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} />}
+      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} dupes={dupes} />}
       {Object.values(accounts).some((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6) && (
         <p style={{ background: "#fef3c7", padding: "8px 10px", borderRadius: 6, fontSize: 14 }}>
           📄 Time for a new statement: {Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6).map((a) => a.name).join(", ")}
@@ -635,7 +658,7 @@ function Dashboard({ session }) {
           {(() => {
             const rentRule = rules.find((r) => /rent/i.test(r.note || ""));
             if (!rentRule) return null;
-            const pays = (txns || []).filter((t) => t.amount > 0 && rentRule.re.test(t.merchant || ""));
+            const pays = liveTxns.filter((t) => t.amount > 0 && rentRule.re.test(t.merchant || ""));
             return (
               <>
                 <h2 style={{ fontSize: 17, margin: "8px 0 6px" }}>Rent</h2>
