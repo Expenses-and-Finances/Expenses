@@ -187,7 +187,11 @@ function AccountsList({ accounts }) {
               <span>
                 {a.name} {a.mask && <span style={{ color: "#6b7280" }}>••{a.mask}</span>}
                 <br />
-                <small style={{ color: "#6b7280" }}>{label(a)}</small>
+                <small style={{ color: "#6b7280" }}>
+                  {label(a)}
+                  {a.is_manual && ` · from statement, as of ${String(a.balance_updated_at || "").slice(0, 10)}`}
+                </small>
+                {a.is_manual && a.balance_note && <><br /><small style={{ color: "#6b7280" }}>{a.balance_note}</small></>}
               </span>
               <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                 {a.current_balance == null ? <small style={{ color: "#6b7280" }}>press Refresh</small> : (
@@ -205,7 +209,7 @@ function AccountsList({ accounts }) {
           ))}
         </div>
       ))}
-      <p style={{ color: "#6b7280", margin: "6px 0" }}><small>Balances update each time you press Refresh. Banks may report them with a short delay.</small></p>
+      <p style={{ color: "#6b7280", margin: "6px 0" }}><small>Connected balances update each time you press Refresh, and banks may report them with a short delay. Accounts marked "from statement" update when a new statement is entered.</small></p>
     </section>
   );
 }
@@ -224,7 +228,7 @@ function Dashboard({ session }) {
 
   async function load() {
     const [a, c, p, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, property_id, type, subtype, institution, current_balance, available_balance, balance_updated_at"),
+      supabase.from("accounts").select("id, name, mask, property_id, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction").order("created_at"),
