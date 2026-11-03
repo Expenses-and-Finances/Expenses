@@ -241,6 +241,38 @@ const PERIODS = {
   year: { label: "This year", range: () => { const n = new Date(); return [`${n.getFullYear()}-01-01`, day(n)]; } },
 };
 
+// Small line drawings for each category, picked by name.
+const ICONS = [
+  [/grocer/i, <><path d="M3 4h2l2.3 10.2a1 1 0 0 0 1 .8h8.8a1 1 0 0 0 1-.8L20 8H6.1" /><circle cx="9" cy="19" r="1.4" /><circle cx="17" cy="19" r="1.4" /><path d="M9 8V6.2a1.6 1.6 0 0 1 3.2 0V8" /><path d="M13.5 8V4.5h3V8" /><path d="M7.5 11h11" /></>],
+  [/shop/i, <><path d="M5.5 8h13l-1.1 12H6.6z" /><path d="M9 10V6.5a3 3 0 0 1 6 0V10" /></>],
+  [/home|utilit/i, <><path d="M3.5 11 12 4l8.5 7" /><path d="M5.5 9.5V20h13V9.5" /><path d="M10 20v-5.5h4V20" /></>],
+  [/health|personal/i, <><path d="M12 20s-7.5-4.6-7.5-10.2A4.1 4.1 0 0 1 12 7.4a4.1 4.1 0 0 1 7.5 2.4C19.5 15.4 12 20 12 20z" /><path d="M7.5 12h2.5l1.2-2 1.6 4 1.2-2h2.5" /></>],
+  [/gift/i, <><rect x="4" y="10" width="16" height="10" rx="1" /><path d="M3 7h18v3H3z" /><path d="M12 7v13" /><path d="M12 7c-1.5-3-5-3.6-5-1.5S10 7 12 7zm0 0c1.5-3 5-3.6 5-1.5S14 7 12 7z" /></>],
+  [/entertain/i, <><path d="M4 7h16v3a2 2 0 0 0 0 4v3H4v-3a2 2 0 0 0 0-4z" /><path d="M14 7v2.5M14 12v.5M14 15v2" /></>],
+  [/travel/i, <><path d="M21 4 3 11.2l6.3 2.4L11.8 20l3.1-4.4 4.3 2.6z" /><path d="M9.3 13.6 21 4" /></>],
+  [/dining|coffee|food/i, <><path d="M5 9h11v4.5A5.5 5.5 0 0 1 10.5 19A5.5 5.5 0 0 1 5 13.5z" /><path d="M16 10.5h1.6a2.2 2.2 0 0 1 0 4.4H16" /><path d="M8.5 3.5v2.5M11.5 3.5v2.5" /></>],
+  [/fee|tax|donat/i, <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 11.5h6M9 15h3.5" /></>],
+  [/transport|\bcar\b/i, <><path d="M3.5 15.5V12l2-5h13l2 5v3.5z" /><path d="M3.5 12h17" /><circle cx="7.5" cy="15.5" r="1.8" /><circle cx="16.5" cy="15.5" r="1.8" /></>],
+  [/servic|subscri/i, <><path d="M19.5 10.5A7.5 7.5 0 0 0 6 6.6L4.5 8" /><path d="M4.5 4v4h4" /><path d="M4.5 13.5A7.5 7.5 0 0 0 18 17.4l1.5-1.4" /><path d="M19.5 20v-4h-4" /></>],
+  [/sofia/i, <><path d="M6 4v7.5a6 6 0 0 0 12 0V4" /><path d="M4.5 4h3M16.5 4h3" /><circle cx="6.6" cy="8" r=".7" /><circle cx="17.4" cy="8" r=".7" /><circle cx="8" cy="13.6" r=".7" /><circle cx="16" cy="13.6" r=".7" /></>],
+  [/tomas/i, <><path d="M7 9a5 5 0 0 1 10 0v11H7z" /><path d="M10 4.6V3.5h4v1.1" /><rect x="9.5" y="13" width="5" height="4" rx=".8" /><path d="M7 12H5.5v6H7M17 12h1.5v6H17" /></>],
+  [/kid|activit/i, <><path d="M12 3.5a5 5 0 0 1 5 5c0 3.8-5 6.8-5 6.8S7 12.3 7 8.5a5 5 0 0 1 5-5z" /><path d="M12 15.3c-.8 1.6 1.4 2.4.4 4.2" /></>],
+  [/loan|mortgage/i, <><path d="M3.5 9 12 4.5 20.5 9z" /><path d="M6 10.5v6.5M10 10.5v6.5M14 10.5v6.5M18 10.5v6.5" /><path d="M3.5 19.5h17" /></>],
+  [/card/i, <><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18M7 14.5h4" /></>],
+  [/rent|income/i, <><circle cx="8" cy="12" r="3.5" /><path d="M11.5 12H21M18 12v3M15.5 12v2" /></>],
+];
+const OTHER_ICON = <><circle cx="12" cy="12" r="8" /><circle cx="8.5" cy="12" r=".8" /><circle cx="12" cy="12" r=".8" /><circle cx="15.5" cy="12" r=".8" /></>;
+function CatIcon({ name }) {
+  const found = ICONS.find(([re]) => re.test(name || ""));
+  return (
+    <span className="cat-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        {found ? found[1] : OTHER_ICON}
+      </svg>
+    </span>
+  );
+}
+
 // The database returns at most 1,000 rows per request, so read transactions in pages.
 async function loadAllTransactions() {
   const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id";
@@ -673,11 +705,14 @@ function Dashboard({ session }) {
               {breakdown.map((c) => (
                 <div key={c.id}>
                   <button className="cat" aria-expanded={filterCat === c.id} onClick={() => pick(filterCat === c.id ? null : c.id, null)}>
-                    <div className="cat-row">
-                      <span className="cat-name">{c.name}</span>
-                      <span className="cat-amt">{money(c.total)}<span className="pct">{Math.round((c.total / spent) * 100)}%</span></span>
-                    </div>
-                    <div className="bar"><i style={{ width: `${(c.total / top) * 100}%` }} /></div>
+                    <CatIcon name={c.name} />
+                    <span className="cat-body">
+                      <span className="cat-row">
+                        <span className="cat-name">{c.name}</span>
+                        <span className="cat-amt">{money(c.total)}<span className="pct">{Math.round((c.total / spent) * 100)}%</span></span>
+                      </span>
+                      <span className="bar"><i style={{ width: `${(c.total / top) * 100}%` }} /></span>
+                    </span>
                   </button>
                   {filterCat === c.id && details}
                 </div>

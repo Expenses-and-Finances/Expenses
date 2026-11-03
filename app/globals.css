@@ -162,3 +162,12 @@ button { cursor: pointer; }
 .signin input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--sheet); border-radius: 999px; padding: 9px 14px; font-size: 16px; }
 .month.gap .m-amt { color: var(--muted); }
 .month.gap { background: transparent; border: 1px dashed #cfd6cc; }
+
+/* Category icons */
+.cat { display: flex; align-items: center; gap: 12px; }
+.cat-body { flex: 1; min-width: 0; display: block; }
+.cat-row, .bar { display: flex; }
+.bar { display: block; }
+.cat-icon { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--green-soft); color: var(--green); }
+.cat[aria-expanded="true"] .cat-icon { background: var(--brass-soft); color: #8a6a12; }
+.drill { margin-left: 18px; }
