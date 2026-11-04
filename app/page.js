@@ -300,6 +300,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
         <div className="connect">
           <ConnectBank session={session} onChange={onChange} />
           <ConnectBank session={session} onChange={onChange} profile="wife" label="Connect wife's bank" />
+          <ConnectBank session={session} onChange={onChange} profile="silvina" label="Connect Silvina's bank" />
         </div>
         {Object.entries(banks).sort().map(([bank, list]) => {
           const ids = new Set(list.map((a) => a.id));
@@ -323,6 +324,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
                       <div>
                         {a.name} {a.mask && <span className="acct-note">••{a.mask}</span>}{" "}
                         {a.owner_person === "Wife" && <span className="tag wife">Wife</span>}{" "}
+                        {a.owner_person === "Silvina" && <span className="tag silvina">Silvina</span>}{" "}
                         {dupes.has(a.id) && <span className="tag">Duplicate, not counted</span>}
                       </div>
                       <div className="acct-note">
@@ -515,7 +517,7 @@ function Dashboard({ session }) {
     }
     for (const list of Object.values(groups)) {
       if (list.length < 2) continue;
-      list.sort((x, y) => (latest[y.id] || "").localeCompare(latest[x.id] || "") || (x.owner_person === "Wife") - (y.owner_person === "Wife"));
+      list.sort((x, y) => (latest[y.id] || "").localeCompare(latest[x.id] || "") || (({ You: 0, Wife: 1, Silvina: 2 })[x.owner_person] ?? 0) - (({ You: 0, Wife: 1, Silvina: 2 })[y.owner_person] ?? 0));
       for (const a of list.slice(1)) dupes.add(a.id);
       const withProp = list.find((a) => a.property_id);
       if (withProp && !list[0].property_id) inheritedProp[list[0].id] = withProp.property_id;

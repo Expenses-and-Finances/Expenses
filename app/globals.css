@@ -179,3 +179,4 @@ button { cursor: pointer; }
 .check.warn .check-dot { background: var(--brass-soft); color: #8a6a12; }
 .why.flag { color: #8a6a12; }
 .why.flag::before { content: "⚠ "; }
+.tag.silvina { background: #e6ecf6; color: #34507a; }
