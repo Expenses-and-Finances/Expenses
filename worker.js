@@ -25,11 +25,16 @@ async function requireOwner(request, env) {
   return user;
 }
 
-// Two sets of Plaid keys: "primary" (yours) and "wife" (her own Plaid account, set as PLAID_CLIENT_ID_2 / PLAID_SECRET_2).
+// Plaid key sets: "primary" (yours), "wife" (PLAID_CLIENT_ID_2 / PLAID_SECRET_2), "silvina" (PLAID_CLIENT_ID_3 / PLAID_SECRET_3).
 function plaidKeys(env, profile) {
   if (profile === "wife") {
     if (!env.PLAID_CLIENT_ID_2 || !env.PLAID_SECRET_2) throw new Error("wife's Plaid keys are not set up");
     return { client_id: env.PLAID_CLIENT_ID_2, secret: env.PLAID_SECRET_2 };
+  }
+  // Third set: Silvina's own Plaid account (PLAID_CLIENT_ID_3 / PLAID_SECRET_3).
+  if (profile === "silvina") {
+    if (!env.PLAID_CLIENT_ID_3 || !env.PLAID_SECRET_3) throw new Error("Silvina's Plaid keys are not set up");
+    return { client_id: env.PLAID_CLIENT_ID_3, secret: env.PLAID_SECRET_3 };
   }
   return { client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET };
 }
@@ -129,7 +134,7 @@ async function syncItem(env, item) {
     const rows = await db(env, "POST", "accounts?on_conflict=plaid_account_id", accounts.map((a) => ({
       plaid_account_id: a.account_id,
       plaid_item_id: item.item_id,
-      owner_person: profile === "wife" ? "Wife" : "You",
+      owner_person: profile === "wife" ? "Wife" : profile === "silvina" ? "Silvina" : "You",
       name: a.official_name || a.name,
       institution: item.institution,
       mask: a.mask,
@@ -211,7 +216,7 @@ export default {
 
       try {
         const body = request.headers.get("content-type")?.includes("json") ? await request.json().catch(() => ({})) : {};
-        const profile = body.profile === "wife" ? "wife" : "primary";
+        const profile = ["wife", "silvina"].includes(body.profile) ? body.profile : "primary";
 
         if (url.pathname === "/api/plaid/link-token" && body.item_id) {
           // Reconnect ("update mode"): same connection, fresh bank login, no new slot used.
