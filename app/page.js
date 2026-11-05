@@ -396,7 +396,7 @@ function Dashboard({ session }) {
 
   async function load() {
     const [a, c, p, cr, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, responsibility, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
+      supabase.from("accounts").select("id, name, mask, responsibility, owner_override, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
@@ -404,7 +404,8 @@ function Dashboard({ session }) {
       loadAllTransactions(),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
-    setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, x])));
+    // owner_override (set by hand, e.g. Mariana's account connected through your Plaid) wins over the Plaid login's owner.
+    setAccounts(Object.fromEntries((a.data || []).map((x) => [x.id, { ...x, owner_person: x.owner_override || x.owner_person }])));
     setCats(c.data || []);
     setProps(p.data || []);
     setCrypto(cr.data || []);
