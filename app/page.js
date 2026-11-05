@@ -216,13 +216,23 @@ function estimateLoan(account, txns) {
 
 const monthsOld = (d) => (d ? (Date.now() - new Date(d)) / (30.44 * 864e5) : 0);
 
+const nextMonth = (y, m) => (m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`);
+// Which month a rent payment is for: a month set by hand wins, otherwise day 25 or later counts for the next month.
+const rentKeyOf = (t) => {
+  const [y, m, d] = t.posted_date.split("-").map(Number);
+  return t.rent_month || (d >= 25 ? nextMonth(y, m) : `${y}-${String(m).padStart(2, "0")}`);
+};
+const short$ = (n) => (n >= 9950 ? `$${(n / 1000).toFixed(0)}k` : n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${Math.round(n)}`);
+// Fixed order of series colors for the trends chart; the 8th slot is "everything else".
+const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"];
+const OTHER_COLOR = "#b4bcb6";
+
 // Rent paid near the end of a month (day 25 or later) counts for the next month, unless a month was set by hand.
 // Returned payments come in as negative amounts and cancel out the payment they reverse.
 function rentMonths(payments, months = 12) {
   const byMonth = {};
   for (const t of payments) {
-    const [y, m, d] = t.posted_date.split("-").map(Number);
-    const key = t.rent_month || (d >= 25 ? (m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`) : `${y}-${String(m).padStart(2, "0")}`);
+    const key = rentKeyOf(t);
     (byMonth[key] = byMonth[key] || []).push(t);
   }
   const now = new Date();
@@ -394,7 +404,9 @@ function Dashboard({ session }) {
   const [msg, setMsg] = useState("");
   const [showAccounts, setShowAccounts] = useState(false);
   const [showCardCheck, setShowCardCheck] = useState(false);
-  const [tab, setTab] = useState("household"); // "household" or a person's name
+  const [tab, setTab] = useState("household"); // "household", "trends" or a person's name
+  const [trendMonth, setTrendMonth] = useState(null); // month picked in the trends chart
+  const [trendCat, setTrendCat] = useState(null); // category row opened in trends
 
   async function load() {
     const [a, c, p, cr, r, t] = await Promise.all([
@@ -778,6 +790,138 @@ function Dashboard({ session }) {
     </>
   );
 
+
+  // Trends: household spending in each of the last six full months, split by category.
+  const trendsView = tab !== "trends" ? null : (() => {
+    const now = new Date();
+    const months = [];
+    for (let i = 6; i >= 1; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleString("en-US", { month: "short" }), long: d.toLocaleString("en-US", { month: "long", year: "numeric" }) });
+    }
+    const keys = new Set(months.map((m) => m.key));
+    // Same rules as the household total; rent is placed in the month it pays for.
+    const monthOf = (t) => (rentRule && rentRule.re.test(t.merchant || "") ? rentKeyOf(t) : t.posted_date.slice(0, 7));
+    const cell = {}; // cell[catId][monthKey]
+    const monthTotal = {};
+    for (const t of liveTxns) {
+      if (!(t.amount > 0) || transfer(t) || propOf(t)) continue;
+      const mk = monthOf(t);
+      if (!keys.has(mk)) continue;
+      const c = catOf(t);
+      const id = c?.id || "none";
+      (cell[id] = cell[id] || {})[mk] = (cell[id][mk] || 0) + Number(t.amount);
+      monthTotal[mk] = (monthTotal[mk] || 0) + Number(t.amount);
+    }
+    const n = months.length;
+    const rows = Object.keys(cell).map((id) => {
+      const c = cats.find((x) => x.id === id);
+      const total = Object.values(cell[id]).reduce((a, b) => a + b, 0);
+      return { id, name: c?.name || "Uncategorized", byMonth: cell[id], total, avg: total / n };
+    }).sort((a, b) => b.total - a.total);
+    rows.forEach((r, i) => { r.color = i < SERIES.length ? SERIES[i] : OTHER_COLOR; });
+    const top = rows.slice(0, SERIES.length);
+    const rest = rows.slice(SERIES.length);
+    const avgTotal = rows.reduce((s, r) => s + r.avg, 0);
+    // Bars: each month plus the average, stacked by the top categories and "everything else".
+    const stackOf = (get) => [...top.map((r) => ({ id: r.id, name: r.name, color: r.color, v: get(r) })),
+      { id: "rest", name: "Everything else", color: OTHER_COLOR, v: rest.reduce((s, r) => s + get(r), 0) }].filter((x) => x.v > 0);
+    const bars = [...months.map((m) => ({ key: m.key, label: m.label, long: m.long, total: monthTotal[m.key] || 0, stack: stackOf((r) => r.byMonth[m.key] || 0) })),
+      { key: "avg", label: "Avg", long: "Six-month average", total: avgTotal, stack: stackOf((r) => r.avg), avg: true }];
+    const max = Math.max(...bars.map((b) => b.total), 1);
+    const sel = bars.find((b) => b.key === trendMonth) || bars[bars.length - 1];
+    const selVal = (r) => (sel.avg ? r.avg : r.byMonth[sel.key] || 0);
+    const H = 180;
+    const [d1, c1] = money(sel.total).split(".");
+    return (
+      <>
+        <section className="hero">
+          <p className="hero-label">{sel.avg ? `Average month, ${months[0].label} to ${months[n - 1].long}` : `Household spent in ${sel.long}`}</p>
+          <div className="hero-amount" style={{ cursor: "default" }}>{d1}<span className="cents">.{c1}</span></div>
+          <div className="moved">
+            {sel.avg ? `Six full months; ${now.toLocaleString("en-US", { month: "long" })} is left out until it ends.`
+              : `${sel.total >= avgTotal ? money(sel.total - avgTotal) + " more" : money(avgTotal - sel.total) + " less"} than the six-month average of ${money(avgTotal)}.`}
+          </div>
+        </section>
+
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">Month by month</h2>
+            <span className="section-note">Tap a month</span>
+          </div>
+          <div className="sheet trend-sheet">
+            <div className="trend-chart" style={{ height: H + 44 }}>
+              {bars.map((b) => (
+                <button key={b.key} className={"trend-col" + (b.avg ? " avg" : "")} aria-pressed={sel.key === b.key}
+                  onClick={() => setTrendMonth(b.key)} aria-label={`${b.long}: ${money(b.total)}`}>
+                  <span className="trend-total">{short$(b.total)}</span>
+                  <span className="trend-stack" style={{ height: Math.max(2, (b.total / max) * H) }}>
+                    {b.stack.slice().reverse().map((s) => (
+                      <i key={s.id} style={{ flexGrow: s.v, background: s.color }} title={`${s.name}: ${money(s.v)}`} />
+                    ))}
+                  </span>
+                  <span className="trend-label">{b.label}</span>
+                </button>
+              ))}
+            </div>
+            <div className="legend">
+              {[...top, ...(rest.length ? [{ id: "rest", name: "Everything else", color: OTHER_COLOR }] : [])].map((r) => (
+                <span key={r.id}><i style={{ background: r.color }} />{r.name}</span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">{sel.avg ? "Average month by category" : `${sel.long} by category`}</h2>
+            <span className="section-note">{sel.avg ? "Bars show each month" : "Compared with the average"}</span>
+          </div>
+          <div className="sheet">
+            {rows.map((r) => {
+              const v = selVal(r);
+              const peak = Math.max(...months.map((m) => r.byMonth[m.key] || 0), 1);
+              const diff = v - r.avg;
+              const open = trendCat === r.id;
+              return (
+                <div key={r.id}>
+                  <button className="cat trend-row" aria-expanded={open} onClick={() => setTrendCat(open ? null : r.id)}>
+                    <CatIcon name={r.name} />
+                    <span className="cat-body">
+                      <span className="cat-row">
+                        <span className="cat-name"><i className="swatch" style={{ background: r.color }} />{r.name}</span>
+                        <span className="cat-amt">{money(v).replace(/\.\d\d$/, "")}</span>
+                      </span>
+                      <span className="trend-sub">
+                        <span className="spark" aria-hidden="true">
+                          {months.map((m) => (
+                            <i key={m.key} className={sel.key === m.key ? "on" : ""} style={{ height: `${Math.max(6, ((r.byMonth[m.key] || 0) / peak) * 100)}%`, opacity: r.byMonth[m.key] ? 1 : 0.25 }} />
+                          ))}
+                        </span>
+                        <span className="txn-meta">
+                          {sel.avg ? `${Math.round((r.avg / (avgTotal || 1)) * 100)}% of an average month`
+                            : Math.abs(diff) < 1 ? "Same as average" : `${diff > 0 ? "+" : "−"}${money(Math.abs(diff)).replace(/\.\d\d$/, "")} vs avg ${money(r.avg).replace(/\.\d\d$/, "")}`}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                  {open && (
+                    <div className="drill trend-months">
+                      {months.map((m) => (
+                        <div key={m.key} className="acct"><span>{m.long}</span><span className="acct-bal">{money(r.byMonth[m.key] || 0)}</span></div>
+                      ))}
+                      <div className="acct"><span><b>Average</b></span><span className="acct-bal">{money(r.avg)}</span></div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </>
+    );
+  })();
+
   const [dollars, cents] = money(spent).split(".");
   const transfersCount = inPeriod.filter(transfer).length;
   const dueStatements = Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6);
@@ -809,17 +953,17 @@ function Dashboard({ session }) {
       ) : (
         <>
           <div className="tabs" role="tablist">
-            {["household", ...people].map((p) => (
+            {["household", "trends", ...people].map((p) => (
               <button key={p} role="tab" aria-selected={tab === p} className="tab" onClick={() => { setTab(p); pick(null, null); }}>
-                {p === "household" ? "Household" : p}
+                {p === "household" ? "Household" : p === "trends" ? "Trends" : p}
               </button>
             ))}
           </div>
-          <div className="periods" role="group" aria-label="Period">
+          {tab !== "trends" && <div className="periods" role="group" aria-label="Period">
             {Object.entries(PERIODS).map(([k, v]) => (
               <button key={k} className="chip" aria-pressed={period === k} onClick={() => { setPeriod(k); pick(null, null); }}>{v.label}</button>
             ))}
-          </div>
+          </div>}
 
           {tab === "household" ? (<>
           <section className="hero">
@@ -1042,7 +1186,7 @@ function Dashboard({ session }) {
               })}
             </div>
           </section>
-          </>) : personView}
+          </>) : tab === "trends" ? trendsView : personView}
         </>
       )}
     </main>
