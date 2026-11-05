@@ -822,6 +822,12 @@ function Dashboard({ session }) {
       months.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleString("en-US", { month: "short" }), long: d.toLocaleString("en-US", { month: "long", year: "numeric" }) });
     }
     const keys = new Set(months.map((m) => m.key));
+    // Coverage is checked over a full year so older gaps can be filled with statements.
+    const months12 = [];
+    for (let i = 12; i >= 1; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months12.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleString("en-US", { month: "short" }), long: d.toLocaleString("en-US", { month: "long", year: "numeric" }) });
+    }
     // Same rules as the household total; rent is placed in the month it pays for.
     const monthOf = (t) => (rentRule && rentRule.re.test(t.merchant || "") ? rentKeyOf(t) : t.posted_date.slice(0, 7));
     const cell = {}; // cell[catId][monthKey]
@@ -870,7 +876,7 @@ function Dashboard({ session }) {
       const name = `${a.institution || ""} ${a.name || ""}${a.mask ? " ••" + a.mask : ""}`.trim();
       // A card opened during the window has no history before that by design: not a blind spot.
       const opened = a.opened_on ? Date.parse(a.opened_on + "T00:00:00Z") : null;
-      for (const m of months) {
+      for (const m of months12) {
         const s1 = mEnd(m.key), s0 = Math.max(mStart(m.key), opened || 0), days = (s1 - mStart(m.key)) / DAY + 1;
         if (s0 > s1) continue;
         let missing = 0, reason = null;
@@ -884,7 +890,7 @@ function Dashboard({ session }) {
           missing = days; reason = "no transactions this month";
         }
         const est = typical * (missing / days);
-        if (reason && est >= 100) (blind[m.key] = blind[m.key] || []).push({ acct: name, reason, est });
+        if (reason && est >= 100) (blind[m.key] = blind[m.key] || []).push({ acct: name, acctId: a.id, reason, est });
       }
     }
     // A month counts as incomplete when the likely missing amount is over $500 and at least 3% of what we can see.
@@ -926,6 +932,45 @@ function Dashboard({ session }) {
               : `${sel.total >= avgTotal ? money(sel.total - avgTotal) + " more" : money(avgTotal - sel.total) + " less"} than the average of ${money(avgTotal)}.`}
           </div>
         </section>
+
+        {(() => {
+          // One line per account: the months a statement would fill in.
+          const need = {};
+          for (const m of months12) for (const b of blind[m.key] || []) {
+            const e = (need[b.acctId] = need[b.acctId] || { acct: b.acct, months: [], est: 0 });
+            e.months.push(m); e.est += b.est;
+          }
+          const list = Object.values(need).sort((a, b) => b.est - a.est);
+          const count = list.reduce((s, e) => s + e.months.length, 0);
+          if (!count) return null;
+          const span = (ms) => {
+            // Collapse consecutive months: "Nov 2025 to Aug 2026", "Oct 2026".
+            const out = []; let run = [ms[0]];
+            for (let i = 1; i < ms.length; i++) {
+              const prev = months12.indexOf(run[run.length - 1]), cur = months12.indexOf(ms[i]);
+              if (cur === prev + 1) run.push(ms[i]); else { out.push(run); run = [ms[i]]; }
+            }
+            out.push(run);
+            return out.map((r) => (r.length === 1 ? r[0].long : `${r[0].long.replace(/ \d{4}$/, r[0].long.slice(-4) === r[r.length - 1].long.slice(-4) ? "" : " " + r[0].long.slice(-4))} to ${r[r.length - 1].long}`)).join(", ");
+          };
+          return (
+            <details className="needs">
+              <summary>
+                <span className="needs-count">{count}</span>
+                <span><b>Statements to add</b><span className="txn-meta" style={{ display: "block" }}>Months in the last year where an account is missing data. Send these statements to Claude to fill them in.</span></span>
+                <span className="caret">▸</span>
+              </summary>
+              <div className="needs-body">
+                {list.map((e) => (
+                  <div key={e.acct} className="acct">
+                    <span>{e.acct}<span className="acct-note" style={{ display: "block" }}>{span(e.months)}</span></span>
+                    <span className="acct-bal">{e.months.length} statement{e.months.length > 1 ? "s" : ""}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          );
+        })()}
 
         <section className="section">
           <div className="section-head">

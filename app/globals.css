@@ -260,3 +260,13 @@ button { cursor: pointer; }
 .blind { padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
 .blind:last-of-type { border-bottom: 0; }
 .blind-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+
+/* Statements to add */
+.needs { background: var(--brass-soft); border-radius: 14px; margin: 0 0 22px; }
+.needs summary { display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer; list-style: none; }
+.needs summary::-webkit-details-marker { display: none; }
+.needs[open] .caret { transform: rotate(90deg); }
+.needs summary > span:nth-child(2) { flex: 1; min-width: 0; }
+.needs-count { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--brass); color: #fff; font-weight: 700; font-size: 13px; }
+.needs-body { padding: 0 14px 10px; }
+.needs-body .acct { border-top: 1px solid #eadfbd; }
