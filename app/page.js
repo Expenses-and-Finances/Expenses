@@ -413,7 +413,7 @@ function Dashboard({ session }) {
 
   async function load() {
     const [a, c, p, cr, r, t, ln] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, responsibility, owner_override, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
+      supabase.from("accounts").select("id, name, mask, responsibility, owner_override, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern, opened_on"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
@@ -868,8 +868,11 @@ function Dashboard({ session }) {
       const spends = fullMonths.map((k) => spendMonth[k] || 0).sort((x, y) => x - y);
       const typical = spends.length ? spends[Math.floor(spends.length / 2)] : 0;
       const name = `${a.institution || ""} ${a.name || ""}${a.mask ? " ••" + a.mask : ""}`.trim();
+      // A card opened during the window has no history before that by design: not a blind spot.
+      const opened = a.opened_on ? Date.parse(a.opened_on + "T00:00:00Z") : null;
       for (const m of months) {
-        const s0 = mStart(m.key), s1 = mEnd(m.key), days = (s1 - s0) / DAY + 1;
+        const s1 = mEnd(m.key), s0 = Math.max(mStart(m.key), opened || 0), days = (s1 - mStart(m.key)) / DAY + 1;
+        if (s0 > s1) continue;
         let missing = 0, reason = null;
         if (first > s0 + 3 * DAY) {
           missing = Math.min(days, (Math.min(first, s1 + DAY) - s0) / DAY);
@@ -884,7 +887,8 @@ function Dashboard({ session }) {
         if (reason && est >= 100) (blind[m.key] = blind[m.key] || []).push({ acct: name, reason, est });
       }
     }
-    const incomplete = (k) => (blind[k] || []).reduce((s, b) => s + b.est, 0) >= 300;
+    // A month counts as incomplete when the likely missing amount is over $500 and at least 3% of what we can see.
+    const incomplete = (k) => { const miss = (blind[k] || []).reduce((s, b) => s + b.est, 0); return miss >= 500 && miss >= 0.03 * (monthTotal[k] || 0); };
     const complete = months.filter((m) => !incomplete(m.key));
     // Averages use complete months only (when there are at least two); otherwise all six, flagged.
     const avgMonths = complete.length >= 2 ? complete : months;
@@ -916,7 +920,7 @@ function Dashboard({ session }) {
           <p className="hero-label">{sel.avg ? (n === months.length ? `Average month, ${months[0].label} to ${months[months.length - 1].long}` : `Average month, using ${avgMonths.map((m) => m.label).join(", ")} only`) : `Household spent in ${sel.long}${sel.partial ? ", at least" : ""}`}</p>
           <div className="hero-amount" style={{ cursor: "default" }}>{sel.partial && <span className="atleast">≥</span>}{d1}<span className="cents">.{c1}</span></div>
           <div className="moved">
-            {sel.avg ? (n === months.length ? `Six full months with complete data; ${now.toLocaleString("en-US", { month: "long" })} is left out until it ends.`
+            {sel.avg ? (n === months.length ? (complete.length === months.length ? `Six full months with complete data; ${now.toLocaleString("en-US", { month: "long" })} is left out until it ends.` : `Fewer than two months have complete data, so this uses all six and is lower than the real average.`)
               : `${months.length - n} of the last six months are missing data from at least one account, so they're left out of the average.`)
               : sel.partial ? `Some accounts are missing data for ${sel.long}, so the real total is higher. See "Missing data" below.`
               : `${sel.total >= avgTotal ? money(sel.total - avgTotal) + " more" : money(avgTotal - sel.total) + " less"} than the average of ${money(avgTotal)}.`}
@@ -951,7 +955,7 @@ function Dashboard({ session }) {
           </div>
         </section>
 
-        {Object.keys(blind).some(incomplete) && (
+        {months.some((m) => incomplete(m.key)) && (
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">Missing data</h2>
