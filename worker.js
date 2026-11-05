@@ -25,19 +25,15 @@ async function requireOwner(request, env) {
   return user;
 }
 
-// Plaid key sets: "primary" (yours), "wife" (PLAID_CLIENT_ID_2 / PLAID_SECRET_2), "silvina" (PLAID_CLIENT_ID_3 / PLAID_SECRET_3), "mariana" (PLAID_CLIENT_ID_4 / PLAID_SECRET_4).
+// Plaid key sets: "primary" (yours), "wife" (PLAID_CLIENT_ID_2 / PLAID_SECRET_2), "silvina" (PLAID_CLIENT_ID_3 / PLAID_SECRET_3); "mariana" uses Silvina's keys.
 function plaidKeys(env, profile) {
   if (profile === "wife") {
     if (!env.PLAID_CLIENT_ID_2 || !env.PLAID_SECRET_2) throw new Error("wife's Plaid keys are not set up");
     return { client_id: env.PLAID_CLIENT_ID_2, secret: env.PLAID_SECRET_2 };
   }
-  // Fourth set: Mariana's own Plaid account (PLAID_CLIENT_ID_4 / PLAID_SECRET_4).
-  if (profile === "mariana") {
-    if (!env.PLAID_CLIENT_ID_4 || !env.PLAID_SECRET_4) throw new Error("Mariana's Plaid keys are not set up");
-    return { client_id: env.PLAID_CLIENT_ID_4, secret: env.PLAID_SECRET_4 };
-  }
-  // Third set: Silvina's own Plaid account (PLAID_CLIENT_ID_3 / PLAID_SECRET_3).
-  if (profile === "silvina") {
+  // Silvina's Plaid account (PLAID_CLIENT_ID_3 / PLAID_SECRET_3). Mariana's banks are connected through it too;
+  // the profile name only decides whose accounts they are.
+  if (profile === "silvina" || profile === "mariana") {
     if (!env.PLAID_CLIENT_ID_3 || !env.PLAID_SECRET_3) throw new Error("Silvina's Plaid keys are not set up");
     return { client_id: env.PLAID_CLIENT_ID_3, secret: env.PLAID_SECRET_3 };
   }
