@@ -252,3 +252,11 @@ button { cursor: pointer; }
 .lc.filled { background: transparent; border: 1px dashed #b7c9bd; color: var(--green); }
 .lc.due { background: var(--brass-soft); color: #7a5f12; }
 .lc.off { background: transparent; }
+
+/* Missing data */
+.trend-col.partial .trend-stack { opacity: 0.55; outline: 1.5px dashed #9aa49d; outline-offset: 1px; }
+.trend-col.partial .trend-label::after { content: "?"; }
+.atleast { font-size: 0.5em; vertical-align: 0.6em; margin-right: 4px; color: var(--muted); }
+.blind { padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
+.blind:last-of-type { border-bottom: 0; }
+.blind-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }

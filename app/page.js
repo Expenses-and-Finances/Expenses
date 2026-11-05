@@ -837,11 +837,63 @@ function Dashboard({ session }) {
       ((items[id] = items[id] || {})[mk] = items[id][mk] || []).push(t);
       monthTotal[mk] = (monthTotal[mk] || 0) + Number(t.amount);
     }
-    const n = months.length;
+    // Blind spots: for each account we count, which part of each month its data actually covers.
+    // An account with no history yet, a feed that stopped, or a month with nothing at all leaves a hole;
+    // the estimate is what that account usually spends in a month.
+    const DAY = 864e5;
+    const mStart = (k) => Date.parse(k + "-01T00:00:00Z");
+    const mEnd = (k) => { const [y, m] = k.split("-").map(Number); return Date.UTC(y, m, 1) - DAY; };
+    const lastFull = months[months.length - 1].key;
+    const byAcct = {};
+    for (const t of txns || []) {
+      if (dupes.has(t.account_id)) continue;
+      (byAcct[t.account_id] = byAcct[t.account_id] || []).push(t);
+    }
+    const blind = {}; // monthKey -> [{ acct, reason, est }]
+    for (const a of Object.values(accounts)) {
+      if (dupes.has(a.id) || !["depository", "credit"].includes(a.type) || a.responsibility === "theirs") continue;
+      const list = byAcct[a.id] || [];
+      if (list.length < 10) continue; // barely used accounts can't tell a gap from a quiet month
+      const dates = list.map((t) => Date.parse(t.posted_date + "T00:00:00Z")).sort((x, y) => x - y);
+      const first = dates[0], last = dates[dates.length - 1];
+      const perMonth = {}, spendMonth = {};
+      for (const t of list) {
+        const k = t.posted_date.slice(0, 7);
+        perMonth[k] = (perMonth[k] || 0) + 1;
+        if (t.amount > 0 && !transfer(t) && !propOf(t) && isOurs(t)) spendMonth[k] = (spendMonth[k] || 0) + Number(t.amount);
+      }
+      const spanMonths = Math.max(1, (last - first) / (30.4 * DAY));
+      if (list.length / spanMonths < 3) continue;
+      const fullMonths = Object.keys(perMonth).filter((k) => mStart(k) >= first && mEnd(k) <= last);
+      const spends = fullMonths.map((k) => spendMonth[k] || 0).sort((x, y) => x - y);
+      const typical = spends.length ? spends[Math.floor(spends.length / 2)] : 0;
+      const name = `${a.institution || ""} ${a.name || ""}${a.mask ? " ••" + a.mask : ""}`.trim();
+      for (const m of months) {
+        const s0 = mStart(m.key), s1 = mEnd(m.key), days = (s1 - s0) / DAY + 1;
+        let missing = 0, reason = null;
+        if (first > s0 + 3 * DAY) {
+          missing = Math.min(days, (Math.min(first, s1 + DAY) - s0) / DAY);
+          reason = first > s1 ? "no history this far back" : `history starts ${shortDate(new Date(first).toISOString().slice(0, 10))}`;
+        } else if (last < s1 - 10 * DAY && m.key <= lastFull) {
+          missing = Math.min(days, (s1 - Math.max(last, s0)) / DAY);
+          reason = last < s0 ? "bank stopped sending data" : `nothing after ${shortDate(new Date(last).toISOString().slice(0, 10))}`;
+        } else if (!perMonth[m.key]) {
+          missing = days; reason = "no transactions this month";
+        }
+        const est = typical * (missing / days);
+        if (reason && est >= 100) (blind[m.key] = blind[m.key] || []).push({ acct: name, reason, est });
+      }
+    }
+    const incomplete = (k) => (blind[k] || []).reduce((s, b) => s + b.est, 0) >= 300;
+    const complete = months.filter((m) => !incomplete(m.key));
+    // Averages use complete months only (when there are at least two); otherwise all six, flagged.
+    const avgMonths = complete.length >= 2 ? complete : months;
+    const n = avgMonths.length;
     const rows = Object.keys(cell).map((id) => {
       const c = cats.find((x) => x.id === id);
       const total = Object.values(cell[id]).reduce((a, b) => a + b, 0);
-      return { id, name: c?.name || "Uncategorized", byMonth: cell[id], total, avg: total / n };
+      const avgTot = avgMonths.reduce((s, m) => s + (cell[id][m.key] || 0), 0);
+      return { id, name: c?.name || "Uncategorized", byMonth: cell[id], total, avg: avgTot / n };
     }).sort((a, b) => b.total - a.total);
     rows.forEach((r, i) => { r.color = i < SERIES.length ? SERIES[i] : OTHER_COLOR; });
     const top = rows.slice(0, SERIES.length);
@@ -850,8 +902,9 @@ function Dashboard({ session }) {
     // Bars: each month plus the average, stacked by the top categories and "everything else".
     const stackOf = (get) => [...top.map((r) => ({ id: r.id, name: r.name, color: r.color, v: get(r) })),
       { id: "rest", name: "Everything else", color: OTHER_COLOR, v: rest.reduce((s, r) => s + get(r), 0) }].filter((x) => x.v > 0);
-    const bars = [...months.map((m) => ({ key: m.key, label: m.label, long: m.long, total: monthTotal[m.key] || 0, stack: stackOf((r) => r.byMonth[m.key] || 0) })),
-      { key: "avg", label: "Avg", long: "Six-month average", total: avgTotal, stack: stackOf((r) => r.avg), avg: true }];
+    const avgName = n === months.length ? "Six-month average" : `Average of ${n} complete month${n > 1 ? "s" : ""}`;
+    const bars = [...months.map((m) => ({ key: m.key, label: m.label, long: m.long, total: monthTotal[m.key] || 0, stack: stackOf((r) => r.byMonth[m.key] || 0), partial: incomplete(m.key) })),
+      { key: "avg", label: "Avg", long: avgName, total: avgTotal, stack: stackOf((r) => r.avg), avg: true }];
     const max = Math.max(...bars.map((b) => b.total), 1);
     const sel = bars.find((b) => b.key === trendMonth) || bars[bars.length - 1];
     const selVal = (r) => (sel.avg ? r.avg : r.byMonth[sel.key] || 0);
@@ -860,11 +913,13 @@ function Dashboard({ session }) {
     return (
       <>
         <section className="hero">
-          <p className="hero-label">{sel.avg ? `Average month, ${months[0].label} to ${months[n - 1].long}` : `Household spent in ${sel.long}`}</p>
-          <div className="hero-amount" style={{ cursor: "default" }}>{d1}<span className="cents">.{c1}</span></div>
+          <p className="hero-label">{sel.avg ? (n === months.length ? `Average month, ${months[0].label} to ${months[months.length - 1].long}` : `Average month, using ${avgMonths.map((m) => m.label).join(", ")} only`) : `Household spent in ${sel.long}${sel.partial ? ", at least" : ""}`}</p>
+          <div className="hero-amount" style={{ cursor: "default" }}>{sel.partial && <span className="atleast">≥</span>}{d1}<span className="cents">.{c1}</span></div>
           <div className="moved">
-            {sel.avg ? `Six full months; ${now.toLocaleString("en-US", { month: "long" })} is left out until it ends.`
-              : `${sel.total >= avgTotal ? money(sel.total - avgTotal) + " more" : money(avgTotal - sel.total) + " less"} than the six-month average of ${money(avgTotal)}.`}
+            {sel.avg ? (n === months.length ? `Six full months with complete data; ${now.toLocaleString("en-US", { month: "long" })} is left out until it ends.`
+              : `${months.length - n} of the last six months are missing data from at least one account, so they're left out of the average.`)
+              : sel.partial ? `Some accounts are missing data for ${sel.long}, so the real total is higher. See "Missing data" below.`
+              : `${sel.total >= avgTotal ? money(sel.total - avgTotal) + " more" : money(avgTotal - sel.total) + " less"} than the average of ${money(avgTotal)}.`}
           </div>
         </section>
 
@@ -876,9 +931,9 @@ function Dashboard({ session }) {
           <div className="sheet trend-sheet">
             <div className="trend-chart" style={{ height: H + 44 }}>
               {bars.map((b) => (
-                <button key={b.key} className={"trend-col" + (b.avg ? " avg" : "")} aria-pressed={trendMonth === b.key}
-                  onClick={() => setTrendMonth(trendMonth === b.key || b.avg ? null : b.key)} aria-label={`${b.long}: ${money(b.total)}`}>
-                  <span className="trend-total">{short$(b.total)}</span>
+                <button key={b.key} className={"trend-col" + (b.avg ? " avg" : "") + (b.partial ? " partial" : "")} aria-pressed={trendMonth === b.key}
+                  onClick={() => setTrendMonth(trendMonth === b.key || b.avg ? null : b.key)} aria-label={`${b.long}: ${b.partial ? "at least " : ""}${money(b.total)}`}>
+                  <span className="trend-total">{b.partial ? "≥" : ""}{short$(b.total)}</span>
                   <span className="trend-stack" style={{ height: Math.max(2, (b.total / max) * H) }}>
                     {b.stack.slice().reverse().map((s) => (
                       <i key={s.id} style={{ flexGrow: s.v, background: s.color }} title={`${s.name}: ${money(s.v)}`} />
@@ -895,6 +950,26 @@ function Dashboard({ session }) {
             </div>
           </div>
         </section>
+
+        {Object.keys(blind).some(incomplete) && (
+          <section className="section">
+            <div className="section-head">
+              <h2 className="section-title">Missing data</h2>
+              <span className="section-note">Hatched months above</span>
+            </div>
+            <div className="sheet">
+              {months.filter((m) => incomplete(m.key)).map((m) => (
+                <div key={m.key} className="blind">
+                  <div className="blind-head"><b>{m.long}</b><span className="txn-meta">likely missing about {money((blind[m.key] || []).reduce((s, x) => s + x.est, 0)).replace(/\.\d\d$/, "")}</span></div>
+                  {(blind[m.key] || []).sort((x, y) => y.est - x.est).map((x) => (
+                    <div key={x.acct} className="acct"><span>{x.acct}<span className="acct-note" style={{ display: "block" }}>{x.reason}</span></span><span className="acct-bal">~{money(x.est).replace(/\.\d\d$/, "")}</span></div>
+                  ))}
+                </div>
+              ))}
+              <p className="txn-meta" style={{ margin: "8px 0 10px" }}>Estimates are what each account usually spends in a month. A statement for that account and month fills the gap.</p>
+            </div>
+          </section>
+        )}
 
         <section className="section">
           <div className="section-head">
@@ -963,21 +1038,22 @@ function Dashboard({ session }) {
                     <line x1={pad} x2={W - pad} y1={y(r.avg)} y2={y(r.avg)} stroke="#9aa49d" strokeDasharray="3 3" strokeWidth="1" />
                     <polyline points={vals.map((v, i) => `${x(i)},${y(v)}`).join(" ")} fill="none" stroke={r.color === OTHER_COLOR ? "#7d8780" : r.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
                     {vals.map((v, i) => {
-                      const f = flagged(v);
+                      const f = flagged(v) && !incomplete(months[i].key);
+                      const gap = incomplete(months[i].key);
                       return (
                         <g key={i}>
                           <title>{`${months[i].long}: ${money(v)}${f ? ` (${v > r.avg ? "+" : "−"}${Math.round((Math.abs(v - r.avg) / r.avg) * 100)}% vs average)` : ""}`}</title>
-                          <circle cx={x(i)} cy={y(v)} r={f ? 4 : 2.2} fill={f ? (v > r.avg ? "#b8901c" : "#1e6b52") : "#fff"} stroke={f ? "#fff" : (r.color === OTHER_COLOR ? "#7d8780" : r.color)} strokeWidth={f ? 1.5 : 1.5} />
+                          <circle cx={x(i)} cy={y(v)} r={f ? 4 : 2.2} fill={f ? (v > r.avg ? "#b8901c" : "#1e6b52") : "#fff"} stroke={f ? "#fff" : gap ? "#b4bcb6" : (r.color === OTHER_COLOR ? "#7d8780" : r.color)} strokeWidth={1.5} strokeDasharray={gap ? "1.5 1.5" : undefined} />
                         </g>
                       );
                     })}
-                    {months.map((m, i) => <text key={m.key} x={x(i)} y={Hh + 11} textAnchor="middle" className="small-axis">{m.label[0]}</text>)}
+                    {months.map((m, i) => <text key={m.key} x={x(i)} y={Hh + 11} textAnchor="middle" className="small-axis">{m.label[0]}{incomplete(m.key) ? "?" : ""}</text>)}
                   </svg>
                 </div>
               );
             })}
           </div>
-          <p className="txn-meta" style={{ marginTop: 8 }}><i className="dot up" /> more than 15% above average <i className="dot down" style={{ marginLeft: 10 }} /> more than 15% below</p>
+          <p className="txn-meta" style={{ marginTop: 8 }}><i className="dot up" /> more than 15% above average <i className="dot down" style={{ marginLeft: 10 }} /> more than 15% below <span style={{ marginLeft: 10 }}>? missing data</span></p>
         </section>
 
         {(() => {
@@ -988,12 +1064,13 @@ function Dashboard({ session }) {
             for (const m of months) {
               const v = r.byMonth[m.key] || 0;
               const diff = v - r.avg;
-              if (Math.abs(diff) / r.avg > SPIKE && Math.abs(diff) >= SPIKE_MIN) spikes.push({ r, m, v, diff });
+              // A drop in a month with missing data is most likely the missing data, so only rises are shown for those.
+              if (Math.abs(diff) / r.avg > SPIKE && Math.abs(diff) >= SPIKE_MIN && !(diff < 0 && incomplete(m.key))) spikes.push({ r, m, v, diff, partial: incomplete(m.key) });
             }
           }
           spikes.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
           const up = spikes.filter((x) => x.diff > 0), down = spikes.filter((x) => x.diff < 0);
-          const explain = ({ r, m, v, diff }) => {
+          const explain = ({ r, m, v, diff, partial }) => {
             const list = (items[r.id]?.[m.key] || []).slice().sort((a, b) => b.amount - a.amount);
             // Compare each store with its own six-month average in this category.
             const per = {};
@@ -1017,7 +1094,7 @@ function Dashboard({ session }) {
                 <summary>
                   <span className={"spike-badge " + (diff > 0 ? "up" : "down")}>{diff > 0 ? "+" : "−"}{pct}%</span>
                   <span className="spike-title">
-                    <b>{r.name}, {m.long}</b>
+                    <b>{r.name}, {m.long}{partial ? " (missing data)" : ""}</b>
                     <span className="txn-meta">{money(v).replace(/\.\d\d$/, "")} vs {money(r.avg).replace(/\.\d\d$/, "")} average ({diff > 0 ? "+" : "−"}{money(Math.abs(diff)).replace(/\.\d\d$/, "")})</span>
                   </span>
                   <span className="caret">▸</span>
