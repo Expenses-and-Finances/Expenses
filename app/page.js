@@ -275,7 +275,7 @@ function CatIcon({ name }) {
 
 // The database returns at most 1,000 rows per request, so read transactions in pages.
 async function loadAllTransactions() {
-  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id";
+  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id, shared";
   let all = [];
   for (let from = 0; from < 50000; from += 1000) {
     const { data, error } = await supabase.from("transactions").select(cols)
@@ -289,7 +289,7 @@ async function loadAllTransactions() {
 
 // Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
 // Loans and credit cards show what you owe.
-function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = new Set() }) {
+function AccountsList({ accounts, txns, crypto = [], session, onChange, onSeparate, dupes = new Set() }) {
   const banks = {};
   for (const a of accounts) (banks[a.institution || "Other"] = banks[a.institution || "Other"] || []).push(a);
   const order = { depository: 1, credit: 2, loan: 3, investment: 4 };
@@ -301,6 +301,7 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
           <ConnectBank session={session} onChange={onChange} />
           <ConnectBank session={session} onChange={onChange} profile="wife" label="Connect wife's bank" />
           <ConnectBank session={session} onChange={onChange} profile="silvina" label="Connect Silvina's bank" />
+          <ConnectBank session={session} onChange={onChange} profile="mariana" label="Connect Mariana's bank" />
         </div>
         {Object.entries(banks).sort().map(([bank, list]) => {
           const ids = new Set(list.map((a) => a.id));
@@ -325,12 +326,19 @@ function AccountsList({ accounts, txns, crypto = [], session, onChange, dupes = 
                         {a.name} {a.mask && <span className="acct-note">••{a.mask}</span>}{" "}
                         {a.owner_person === "Wife" && <span className="tag wife">Wife</span>}{" "}
                         {a.owner_person === "Silvina" && <span className="tag silvina">Silvina</span>}{" "}
+                        {a.owner_person === "Mariana" && <span className="tag mariana">Mariana</span>}{" "}
                         {dupes.has(a.id) && <span className="tag">Duplicate, not counted</span>}
                       </div>
                       <div className="acct-note">
                         {label(a)}
                         {a.is_manual && `, from statement as of ${String(a.balance_updated_at || "").slice(0, 10)}`}
                       </div>
+                      {!a.is_manual && (
+                        <div className="seg" role="group" aria-label="Counts in household">
+                          <button aria-pressed={a.responsibility !== "theirs"} onClick={() => onSeparate(a, false)}>Joint</button>
+                          <button aria-pressed={a.responsibility === "theirs"} onClick={() => onSeparate(a, true)}>Separate</button>
+                        </div>
+                      )}
                       {a.is_manual && a.balance_note && <div className="acct-note">{a.balance_note}</div>}
                       {a.institution === "Coinbase (holdings)" && crypto.length > 0 && (
                         <div className="acct-note">
@@ -384,10 +392,11 @@ function Dashboard({ session }) {
   const [msg, setMsg] = useState("");
   const [showAccounts, setShowAccounts] = useState(false);
   const [showCardCheck, setShowCardCheck] = useState(false);
+  const [tab, setTab] = useState("household"); // "household" or a person's name
 
   async function load() {
     const [a, c, p, cr, r, t] = await Promise.all([
-      supabase.from("accounts").select("id, name, mask, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
+      supabase.from("accounts").select("id, name, mask, responsibility, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
@@ -480,6 +489,18 @@ function Dashboard({ session }) {
     save(t, { property_id: id === auto ? null : id });
   }
 
+  function setOurs(t, ours) {
+    // Matching what the account would do anyway clears the one-off choice.
+    save(t, { shared: ours === ownDefault(t) ? null : ours });
+  }
+
+  async function setSeparate(a, isSeparate) {
+    const responsibility = isSeparate ? "theirs" : "shared";
+    setAccounts((m) => ({ ...m, [a.id]: { ...m[a.id], responsibility } }));
+    const { error } = await supabase.from("accounts").update({ responsibility }).eq("id", a.id);
+    if (error) { setMsg("Could not save that change."); load(); }
+  }
+
   function setCategory(t, id) {
     // Picking the automatic category clears the manual choice, so future label fixes still apply.
     save(t, { category_id: id === autoCat(t)?.id ? null : id });
@@ -517,13 +538,21 @@ function Dashboard({ session }) {
     }
     for (const list of Object.values(groups)) {
       if (list.length < 2) continue;
-      list.sort((x, y) => (latest[y.id] || "").localeCompare(latest[x.id] || "") || (({ You: 0, Wife: 1, Silvina: 2 })[x.owner_person] ?? 0) - (({ You: 0, Wife: 1, Silvina: 2 })[y.owner_person] ?? 0));
+      list.sort((x, y) => (latest[y.id] || "").localeCompare(latest[x.id] || "") || (({ You: 0, Wife: 1, Silvina: 2, Mariana: 3 })[x.owner_person] ?? 0) - (({ You: 0, Wife: 1, Silvina: 2, Mariana: 3 })[y.owner_person] ?? 0));
       for (const a of list.slice(1)) dupes.add(a.id);
       const withProp = list.find((a) => a.property_id);
       if (withProp && !list[0].property_id) inheritedProp[list[0].id] = withProp.property_id;
     }
   }
-  const liveTxns = (txns || []).filter((t) => !dupes.has(t.account_id));
+  // Separate accounts (someone else's own money) aren't counted, except rent paid from them,
+  // which is still a household cost and still shows in the rent tracker.
+  const rentRule = rules.find((r) => /rent/i.test(r.note || ""));
+  const isRentPay = (t) => !!rentRule && t.amount > 0 && rentRule.re.test(t.merchant || "");
+  const separate = (t) => accounts[t.account_id]?.responsibility === "theirs";
+  // Your call on a single purchase wins: shared true = household, false = theirs. Otherwise the account decides.
+  const ownDefault = (t) => (separate(t) ? isRentPay(t) : true);
+  const isOurs = (t) => (t.shared ?? ownDefault(t)) === true;
+  const liveTxns = (txns || []).filter((t) => !dupes.has(t.account_id) && isOurs(t));
   const inPeriod = liveTxns.filter((t) => t.posted_date >= from && t.posted_date <= to);
   const real = inPeriod.filter((t) => !transfer(t));
   const household = real.filter((t) => !propOf(t));
@@ -682,6 +711,70 @@ function Dashboard({ session }) {
     return null;
   };
 
+  // One tab per person whose own accounts are connected (Silvina and Mariana always get one).
+  const people = [...new Set(["Silvina", "Mariana", ...Object.values(accounts).map((a) => a.owner_person).filter((o) => o && o !== "You" && o !== "Wife")])];
+  const personTxns = tab === "household" ? [] : (txns || [])
+    .filter((t) => !dupes.has(t.account_id) && accounts[t.account_id]?.owner_person === tab && t.posted_date >= from && t.posted_date <= to && t.amount > 0 && !transfer(t))
+    .sort((a, b) => (a.posted_date < b.posted_date ? 1 : -1));
+  const personTheirs = personTxns.filter((t) => !isOurs(t));
+  const personOurs = personTxns.filter(isOurs);
+  const sum = (l) => l.reduce((s, t) => s + Number(t.amount), 0);
+  const personHasAccounts = Object.values(accounts).some((a) => a.owner_person === tab);
+  const personView = tab === "household" ? null : (
+    <>
+      <section className="hero">
+        <p className="hero-label">{tab} spent on her own, {PERIODS[period].label.toLowerCase()}</p>
+        <div className="hero-amount" style={{ cursor: "default" }}>
+          {money(sum(personTheirs)).split(".")[0]}<span className="cents">.{money(sum(personTheirs)).split(".")[1]}</span>
+        </div>
+        <div className="moved">
+          {personOurs.length
+            ? `${money(sum(personOurs))} from her accounts counts as household (${personOurs.length} purchase${personOurs.length > 1 ? "s" : ""}).`
+            : "Nothing from her accounts counts as household yet."}
+        </div>
+      </section>
+      {!personHasAccounts ? (
+        <p className="status">No accounts connected for {tab} yet. Open Accounts and tap "Connect {tab}'s bank".</p>
+      ) : (
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">Her purchases</h2>
+            <span className="section-note">Tap "Ours" on anything that's for the household</span>
+          </div>
+          <div className="sheet">
+            {personTxns.length === 0 && <p className="status" style={{ padding: "10px 0" }}>No purchases in this period.</p>}
+            {personTxns.map((t) => {
+              const ours = isOurs(t);
+              return (
+                <div key={t.id} className="txn">
+                  <div className="txn-main">
+                    <div className="txn-name">
+                      {t.merchant || "Unknown"} {t.pending && <span className="tag pending">Pending</span>}
+                      <div className="txn-meta">{shortDate(t.posted_date)}, {acctText(t)}{ours ? `, ${catOf(t)?.name || ""}` : ""}</div>
+                    </div>
+                    <div className="txn-amt">{money(Number(t.amount))}</div>
+                  </div>
+                  <div className="txn-controls">
+                    <div className="seg" role="group" aria-label="Whose purchase">
+                      <button aria-pressed={!ours} onClick={() => setOurs(t, false)}>Hers</button>
+                      <button aria-pressed={ours} onClick={() => setOurs(t, true)}>Ours</button>
+                    </div>
+                    {ours && (
+                      <select className={"pill-select" + (t.category_id ? " set" : "")} value={catOf(t)?.id || ""} onChange={(e) => setCategory(t, e.target.value)} aria-label="Category">
+                        {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    )}
+                    {isRentPay(t) && <span className="tag">Rent</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </>
+  );
+
   const [dollars, cents] = money(spent).split(".");
   const transfersCount = inPeriod.filter(transfer).length;
   const dueStatements = Object.values(accounts).filter((a) => a.is_manual && monthsOld(a.balance_updated_at) >= 6);
@@ -701,7 +794,7 @@ function Dashboard({ session }) {
       </header>
       {msg && <p className="status">{msg}</p>}
 
-      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} dupes={dupes} />}
+      {showAccounts && <AccountsList accounts={Object.values(accounts)} txns={txns || []} crypto={crypto} session={session} onChange={load} onSeparate={setSeparate} dupes={dupes} />}
       {dueStatements.length > 0 && (
         <p className="notice">Time for a new statement: {dueStatements.map((a) => a.name).join(", ")}</p>
       )}
@@ -712,12 +805,20 @@ function Dashboard({ session }) {
         <p className="status">No transactions yet. Open Accounts and connect a bank to get started.</p>
       ) : (
         <>
+          <div className="tabs" role="tablist">
+            {["household", ...people].map((p) => (
+              <button key={p} role="tab" aria-selected={tab === p} className="tab" onClick={() => { setTab(p); pick(null, null); }}>
+                {p === "household" ? "Household" : p}
+              </button>
+            ))}
+          </div>
           <div className="periods" role="group" aria-label="Period">
             {Object.entries(PERIODS).map(([k, v]) => (
               <button key={k} className="chip" aria-pressed={period === k} onClick={() => { setPeriod(k); pick(null, null); }}>{v.label}</button>
             ))}
           </div>
 
+          {tab === "household" ? (<>
           <section className="hero">
             <p className="hero-label">Household spent, {PERIODS[period].label.toLowerCase()}</p>
             <button className="hero-amount" aria-pressed={filterProp === "household"} onClick={() => pick(null, filterProp === "household" ? null : "household")} title="Show household purchases">
@@ -858,9 +959,8 @@ function Dashboard({ session }) {
           </section>
 
           {(() => {
-            const rentRule = rules.find((r) => /rent/i.test(r.note || ""));
             if (!rentRule) return null;
-            const pays = liveTxns.filter((t) => t.amount > 0 && rentRule.re.test(t.merchant || ""));
+            const pays = liveTxns.filter(isRentPay);
             return (
               <section className="section">
                 <div className="section-head">
@@ -927,12 +1027,16 @@ function Dashboard({ session }) {
                         {isT ? "Transfer, not counted" : "Mark as transfer"}
                       </button>
                       {isT && <span className="why">Why: {whyNot(t)}</span>}
+                      {!isT && t.amount > 0 && ["Silvina", "Mariana"].includes(accounts[t.account_id]?.owner_person) && (
+                        <button className="toggle" onClick={() => setOurs(t, false)} title="Move this to her own spending">Hers, not ours</button>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
           </section>
+          </>) : personView}
         </>
       )}
     </main>
