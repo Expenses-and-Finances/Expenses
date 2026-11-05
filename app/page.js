@@ -1039,8 +1039,22 @@ function Dashboard({ session }) {
                 <span className="section-note">Over 15% and $200 off the average</span>
               </div>
               {spikes.length === 0 && <p className="status">Every category stayed within 15% of its average.</p>}
-              {up.length > 0 && <><div className="drill-label">Higher than usual</div><div className="sheet">{up.map(explain)}</div></>}
-              {down.length > 0 && <><div className="drill-label" style={{ marginTop: 14 }}>Lower than usual</div><div className="sheet">{down.map(explain)}</div></>}
+              {up.length > 0 && <>
+                <div className="drill-label">Higher than usual, biggest first</div>
+                <div className="sheet">{up.slice(0, 8).map(explain)}</div>
+                {up.length > 8 && (
+                  <details className="more">
+                    <summary className="link">Show {up.length - 8} smaller increases</summary>
+                    <div className="sheet">{up.slice(8).map(explain)}</div>
+                  </details>
+                )}
+              </>}
+              {down.length > 0 && (
+                <details className="more">
+                  <summary className="link">Show {down.length} month{down.length > 1 ? "s" : ""} that were lower than usual</summary>
+                  <div className="sheet">{down.map(explain)}</div>
+                </details>
+              )}
             </section>
           );
         })()}
