@@ -320,7 +320,9 @@ export default {
       } catch (e) {
         // Log details on the server only; the browser gets a generic message.
         console.error(e.message);
-        return json({ error: "server error" }, 502);
+        // Plaid error codes (e.g. INVALID_API_KEYS) and missing-key notices say nothing secret, so show them to you.
+        const safe = /^plaid \/[\w/.-]+: [A-Z_0-9]+$/.test(e.message) || /keys are not set up$/.test(e.message);
+        return json({ error: safe ? e.message : "server error" }, 502);
       }
 
       return json({ error: "not found" }, 404);
