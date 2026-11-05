@@ -847,13 +847,13 @@ function Dashboard({ session }) {
         <section className="section">
           <div className="section-head">
             <h2 className="section-title">Month by month</h2>
-            <span className="section-note">Tap a month</span>
+            <span className="section-note">{trendMonth ? "Tap again for the average" : "Tap a month"}</span>
           </div>
           <div className="sheet trend-sheet">
             <div className="trend-chart" style={{ height: H + 44 }}>
               {bars.map((b) => (
-                <button key={b.key} className={"trend-col" + (b.avg ? " avg" : "")} aria-pressed={sel.key === b.key}
-                  onClick={() => setTrendMonth(b.key)} aria-label={`${b.long}: ${money(b.total)}`}>
+                <button key={b.key} className={"trend-col" + (b.avg ? " avg" : "")} aria-pressed={trendMonth === b.key}
+                  onClick={() => setTrendMonth(trendMonth === b.key || b.avg ? null : b.key)} aria-label={`${b.long}: ${money(b.total)}`}>
                   <span className="trend-total">{short$(b.total)}</span>
                   <span className="trend-stack" style={{ height: Math.max(2, (b.total / max) * H) }}>
                     {b.stack.slice().reverse().map((s) => (
@@ -895,7 +895,7 @@ function Dashboard({ session }) {
                       <span className="trend-sub">
                         <span className="spark" aria-hidden="true">
                           {months.map((m) => (
-                            <i key={m.key} className={sel.key === m.key ? "on" : ""} style={{ height: `${Math.max(6, ((r.byMonth[m.key] || 0) / peak) * 100)}%`, opacity: r.byMonth[m.key] ? 1 : 0.25 }} />
+                            <i key={m.key} style={{ height: `${Math.max(6, ((r.byMonth[m.key] || 0) / peak) * 100)}%`, background: r.byMonth[m.key] ? r.color : "#d6dbd4", opacity: sel.avg || sel.key === m.key ? 1 : 0.35 }} />
                           ))}
                         </span>
                         <span className="txn-meta">

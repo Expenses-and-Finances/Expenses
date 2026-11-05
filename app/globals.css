@@ -199,8 +199,8 @@ button { cursor: pointer; }
 .trend-stack { width: 100%; max-width: 40px; display: flex; flex-direction: column; gap: 2px; border-radius: 4px 4px 0 0; overflow: hidden; transition: opacity .15s; }
 .trend-stack i { display: block; min-height: 2px; flex-basis: 0; }
 .trend-chart:has(.trend-col[aria-pressed="true"]) .trend-col:not([aria-pressed="true"]) .trend-stack { opacity: 0.45; }
-.trend-col.avg .trend-stack { background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,.35) 5px 7px); }
-.trend-col.avg .trend-stack i { background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,.35) 5px 7px) !important; }
+.trend-col.avg .trend-label { color: var(--ink); font-weight: 600; }
+.trend-col.avg .trend-total { color: var(--ink); }
 .trend-label { font-size: 12px; color: var(--muted); font-weight: 500; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
