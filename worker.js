@@ -25,11 +25,16 @@ async function requireOwner(request, env) {
   return user;
 }
 
-// Plaid key sets: "primary" (yours), "wife" (PLAID_CLIENT_ID_2 / PLAID_SECRET_2), "silvina" (PLAID_CLIENT_ID_3 / PLAID_SECRET_3).
+// Plaid key sets: "primary" (yours), "wife" (PLAID_CLIENT_ID_2 / PLAID_SECRET_2), "silvina" (PLAID_CLIENT_ID_3 / PLAID_SECRET_3), "mariana" (PLAID_CLIENT_ID_4 / PLAID_SECRET_4).
 function plaidKeys(env, profile) {
   if (profile === "wife") {
     if (!env.PLAID_CLIENT_ID_2 || !env.PLAID_SECRET_2) throw new Error("wife's Plaid keys are not set up");
     return { client_id: env.PLAID_CLIENT_ID_2, secret: env.PLAID_SECRET_2 };
+  }
+  // Fourth set: Mariana's own Plaid account (PLAID_CLIENT_ID_4 / PLAID_SECRET_4).
+  if (profile === "mariana") {
+    if (!env.PLAID_CLIENT_ID_4 || !env.PLAID_SECRET_4) throw new Error("Mariana's Plaid keys are not set up");
+    return { client_id: env.PLAID_CLIENT_ID_4, secret: env.PLAID_SECRET_4 };
   }
   // Third set: Silvina's own Plaid account (PLAID_CLIENT_ID_3 / PLAID_SECRET_3).
   if (profile === "silvina") {
@@ -134,7 +139,7 @@ async function syncItem(env, item) {
     const rows = await db(env, "POST", "accounts?on_conflict=plaid_account_id", accounts.map((a) => ({
       plaid_account_id: a.account_id,
       plaid_item_id: item.item_id,
-      owner_person: profile === "wife" ? "Wife" : profile === "silvina" ? "Silvina" : "You",
+      owner_person: ({ wife: "Wife", silvina: "Silvina", mariana: "Mariana" })[profile] || "You",
       name: a.official_name || a.name,
       institution: item.institution,
       mask: a.mask,
@@ -216,7 +221,7 @@ export default {
 
       try {
         const body = request.headers.get("content-type")?.includes("json") ? await request.json().catch(() => ({})) : {};
-        const profile = ["wife", "silvina"].includes(body.profile) ? body.profile : "primary";
+        const profile = ["wife", "silvina", "mariana"].includes(body.profile) ? body.profile : "primary";
 
         if (url.pathname === "/api/plaid/link-token" && body.item_id) {
           // Reconnect ("update mode"): same connection, fresh bank login, no new slot used.
