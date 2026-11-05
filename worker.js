@@ -183,21 +183,23 @@ async function syncItem(env, item) {
 async function retireStatementRows(env, accountIdList) {
   if (!accountIdList.length) return 0;
   const inAccts = encodeURIComponent(accountIdList.join(","));
-  const stmt = await db(env, "GET", `transactions?select=id,account_id,amount,posted_date&source=eq.statement&stale=is.null&account_id=in.(${inAccts})&order=posted_date&limit=2000`);
+  const stmt = await db(env, "GET", `transactions?select=id,account_id,amount,posted_date,created_at&source=eq.statement&stale=is.null&account_id=in.(${inAccts})&order=posted_date&limit=2000`);
   if (!stmt.length) return 0;
   const shift = (d, n) => new Date(Date.parse(d + "T12:00:00Z") + n * 864e5).toISOString().slice(0, 10);
   const from = shift(stmt[0].posted_date, -4), to = shift(stmt[stmt.length - 1].posted_date, 4);
   let bank = [];
   for (let off = 0; ; off += 1000) {
-    const rows = await db(env, "GET", `transactions?select=id,account_id,amount,posted_date&plaid_transaction_id=not.is.null&pending=is.false&account_id=in.(${inAccts})&posted_date=gte.${from}&posted_date=lte.${to}&order=posted_date&limit=1000&offset=${off}`);
+    const rows = await db(env, "GET", `transactions?select=id,account_id,amount,posted_date,created_at&plaid_transaction_id=not.is.null&pending=is.false&account_id=in.(${inAccts})&posted_date=gte.${from}&posted_date=lte.${to}&order=posted_date&limit=1000&offset=${off}`);
     bank = bank.concat(rows);
     if (rows.length < 1000) break;
   }
   const days = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
   const usedBank = new Set();
   const retire = [];
+  // Only a bank transaction that arrived after the import can be the imported line's copy: anything already
+  // there when the statement was imported was checked then (weekly payments of the same amount stay separate).
   for (const s of stmt) {
-    const hit = bank.find((b) => !usedBank.has(b.id) && b.account_id === s.account_id
+    const hit = bank.find((b) => !usedBank.has(b.id) && b.account_id === s.account_id && b.created_at > s.created_at
       && Math.abs(Number(b.amount) - Number(s.amount)) < 0.005 && days(b.posted_date, s.posted_date) <= 4);
     if (hit) { usedBank.add(hit.id); retire.push(s.id); }
   }
