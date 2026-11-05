@@ -309,6 +309,50 @@ export default {
           return json({ items: out });
         }
 
+        // Duplicate check: ask Plaid for its full current list for one bank (without moving the sync cursor)
+        // and mark stored copies Plaid no longer has as stale. Nothing is deleted; apply=false only reports.
+        if (url.pathname === "/api/plaid/audit") {
+          if (!body.item_id) return json({ error: "missing item_id" }, 400);
+          const [item] = await db(env, "GET", `plaid_items?select=item_id,access_token,plaid_profile&item_id=eq.${encodeURIComponent(body.item_id)}`);
+          if (!item) return json({ error: "not found" }, 404);
+          const prof = item.plaid_profile || "primary";
+          const token = await decryptToken(env, item.access_token);
+          const live = new Set();
+          let cursor, complete = false;
+          for (let page = 0; page < 20; page++) {
+            const d = await plaid(env, "/transactions/sync", { access_token: token, cursor, count: 500 }, prof);
+            for (const t of d.added) live.add(t.transaction_id);
+            for (const t of d.modified) live.add(t.transaction_id);
+            cursor = d.next_cursor;
+            if (!d.has_more) { complete = true; break; }
+          }
+          if (!complete || live.size === 0) return json({ error: "Plaid list incomplete, nothing changed", live: live.size }, 409);
+          const accts = await db(env, "GET", `accounts?select=plaid_account_id&plaid_item_id=eq.${encodeURIComponent(item.item_id)}`);
+          const ids = accts.map((a) => a.plaid_account_id).filter(Boolean);
+          let stored = [];
+          if (ids.length) {
+            const inList = encodeURIComponent(ids.map((i) => `"${i}"`).join(","));
+            for (let off = 0; ; off += 1000) {
+              const rows = await db(env, "GET", `transactions?select=plaid_transaction_id,stale&plaid_account_id=in.(${inList})&order=id&limit=1000&offset=${off}`);
+              stored = stored.concat(rows);
+              if (rows.length < 1000) break;
+            }
+          }
+          const stale = stored.filter((r) => r.plaid_transaction_id && !live.has(r.plaid_transaction_id)).map((r) => r.plaid_transaction_id);
+          const revive = stored.filter((r) => r.stale && live.has(r.plaid_transaction_id)).map((r) => r.plaid_transaction_id);
+          if (body.apply) {
+            const mark = async (list, value) => {
+              for (let i = 0; i < list.length; i += 80) {
+                const q = encodeURIComponent(list.slice(i, i + 80).map((x) => `"${x}"`).join(","));
+                await db(env, "PATCH", `transactions?plaid_transaction_id=in.(${q})`, { stale: value }, "return=minimal");
+              }
+            };
+            await mark(stale, true);
+            await mark(revive, null);
+          }
+          return json({ plaid_has: live.size, stored: stored.length, stale: stale.length, revived: revive.length, applied: !!body.apply });
+        }
+
         if (url.pathname === "/api/plaid/match") {
           await matchProperties(env);
           return json({ ok: true });
