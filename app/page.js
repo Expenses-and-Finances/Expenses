@@ -591,7 +591,9 @@ function Dashboard({ session }) {
   const inPeriod = liveTxns.filter((t) => t.posted_date >= from && t.posted_date <= to);
   const real = inPeriod.filter((t) => !transfer(t));
   const household = real.filter((t) => !propOf(t));
-  const spending = household.filter((t) => t.amount > 0);
+  // Money back that you put in a category (a refund, a reimbursement, a referral bonus) lowers that category.
+  const isRefund = (t) => t.amount < 0 && !!t.category_id;
+  const spending = household.filter((t) => t.amount > 0 || isRefund(t));
   const spent = spending.reduce((s, t) => s + Number(t.amount), 0);
   const moved = inPeriod.filter((t) => t.amount > 0 && transfer(t)).reduce((s, t) => s + Number(t.amount), 0);
 
@@ -826,7 +828,7 @@ function Dashboard({ session }) {
     const items = {}; // items[catId][monthKey] = purchases
     const monthTotal = {};
     for (const t of liveTxns) {
-      if (!(t.amount > 0) || transfer(t) || propOf(t)) continue;
+      if (!(t.amount > 0 || isRefund(t)) || transfer(t) || propOf(t)) continue;
       const mk = monthOf(t);
       if (!keys.has(mk)) continue;
       const c = catOf(t);
