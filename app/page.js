@@ -226,6 +226,8 @@ const short$ = (n) => (n >= 9950 ? `$${(n / 1000).toFixed(0)}k` : n >= 1000 ? `$
 // Fixed order of series colors for the trends chart; the 8th slot is "everything else".
 const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"];
 const OTHER_COLOR = "#b4bcb6";
+const SPIKE = 0.15; // a month this far from the category's average gets explained
+const SPIKE_MIN = 200; // ...as long as the difference is at least this many dollars
 
 // Rent paid near the end of a month (day 25 or later) counts for the next month, unless a month was set by hand.
 // Returned payments come in as negative amounts and cancel out the payment they reverse.
@@ -286,7 +288,7 @@ function CatIcon({ name }) {
 
 // The database returns at most 1,000 rows per request, so read transactions in pages.
 async function loadAllTransactions() {
-  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id, shared, stale, rent_month";
+  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id, shared, stale, rent_month, source";
   let all = [];
   for (let from = 0; from < 50000; from += 1000) {
     const { data, error } = await supabase.from("transactions").select(cols)
@@ -803,6 +805,7 @@ function Dashboard({ session }) {
     // Same rules as the household total; rent is placed in the month it pays for.
     const monthOf = (t) => (rentRule && rentRule.re.test(t.merchant || "") ? rentKeyOf(t) : t.posted_date.slice(0, 7));
     const cell = {}; // cell[catId][monthKey]
+    const items = {}; // items[catId][monthKey] = purchases
     const monthTotal = {};
     for (const t of liveTxns) {
       if (!(t.amount > 0) || transfer(t) || propOf(t)) continue;
@@ -811,6 +814,7 @@ function Dashboard({ session }) {
       const c = catOf(t);
       const id = c?.id || "none";
       (cell[id] = cell[id] || {})[mk] = (cell[id][mk] || 0) + Number(t.amount);
+      ((items[id] = items[id] || {})[mk] = items[id][mk] || []).push(t);
       monthTotal[mk] = (monthTotal[mk] || 0) + Number(t.amount);
     }
     const n = months.length;
@@ -918,6 +922,128 @@ function Dashboard({ session }) {
             })}
           </div>
         </section>
+
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">Each category over time</h2>
+            <span className="section-note">Dashed line is the average</span>
+          </div>
+          <div className="smalls">
+            {rows.filter((r) => r.avg >= 50).map((r) => {
+              const vals = months.map((m) => r.byMonth[m.key] || 0);
+              const top = Math.max(...vals, r.avg, 1);
+              const W = 150, Hh = 46, pad = 5;
+              const x = (i) => pad + (i * (W - 2 * pad)) / (n - 1);
+              const y = (v) => Hh - pad - (v / top) * (Hh - 2 * pad);
+              const flagged = (v) => r.avg > 0 && Math.abs(v - r.avg) / r.avg > SPIKE && Math.abs(v - r.avg) >= SPIKE_MIN;
+              return (
+                <div key={r.id} className="small">
+                  <div className="small-head"><span><i className="swatch" style={{ background: r.color }} />{r.name}</span><b>{short$(r.avg)}</b></div>
+                  <svg viewBox={`0 0 ${W} ${Hh + 14}`} width="100%" role="img" aria-label={`${r.name} by month: ${months.map((m, i) => `${m.label} ${money(vals[i])}`).join(", ")}`}>
+                    <line x1={pad} x2={W - pad} y1={y(r.avg)} y2={y(r.avg)} stroke="#9aa49d" strokeDasharray="3 3" strokeWidth="1" />
+                    <polyline points={vals.map((v, i) => `${x(i)},${y(v)}`).join(" ")} fill="none" stroke={r.color === OTHER_COLOR ? "#7d8780" : r.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                    {vals.map((v, i) => {
+                      const f = flagged(v);
+                      return (
+                        <g key={i}>
+                          <title>{`${months[i].long}: ${money(v)}${f ? ` (${v > r.avg ? "+" : "−"}${Math.round((Math.abs(v - r.avg) / r.avg) * 100)}% vs average)` : ""}`}</title>
+                          <circle cx={x(i)} cy={y(v)} r={f ? 4 : 2.2} fill={f ? (v > r.avg ? "#b8901c" : "#1e6b52") : "#fff"} stroke={f ? "#fff" : (r.color === OTHER_COLOR ? "#7d8780" : r.color)} strokeWidth={f ? 1.5 : 1.5} />
+                        </g>
+                      );
+                    })}
+                    {months.map((m, i) => <text key={m.key} x={x(i)} y={Hh + 11} textAnchor="middle" className="small-axis">{m.label[0]}</text>)}
+                  </svg>
+                </div>
+              );
+            })}
+          </div>
+          <p className="txn-meta" style={{ marginTop: 8 }}><i className="dot up" /> more than 15% above average <i className="dot down" style={{ marginLeft: 10 }} /> more than 15% below</p>
+        </section>
+
+        {(() => {
+          // Months more than 15% off a category's average (and at least $200 off), with what drove each one.
+          const spikes = [];
+          for (const r of rows) {
+            if (r.avg <= 0) continue;
+            for (const m of months) {
+              const v = r.byMonth[m.key] || 0;
+              const diff = v - r.avg;
+              if (Math.abs(diff) / r.avg > SPIKE && Math.abs(diff) >= SPIKE_MIN) spikes.push({ r, m, v, diff });
+            }
+          }
+          spikes.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+          const up = spikes.filter((x) => x.diff > 0), down = spikes.filter((x) => x.diff < 0);
+          const explain = ({ r, m, v, diff }) => {
+            const list = (items[r.id]?.[m.key] || []).slice().sort((a, b) => b.amount - a.amount);
+            // Compare each store with its own six-month average in this category.
+            const per = {};
+            for (const mm of months) for (const t of items[r.id]?.[mm.key] || []) {
+              const k = merchantKey(t);
+              const e = (per[k] = per[k] || { name: t.merchant || "Unknown", total: 0, now: 0, count: 0 });
+              e.total += Number(t.amount);
+              if (mm.key === m.key) { e.now += Number(t.amount); e.count++; }
+            }
+            const drivers = Object.values(per).map((e) => ({ ...e, avg: e.total / n, delta: e.now - e.total / n }))
+              .filter((e) => (diff > 0 ? e.delta > 0 : e.delta < 0))
+              .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+            const shown = [];
+            let covered = 0;
+            for (const d of drivers) { if (shown.length >= 5 || covered >= Math.abs(diff) * 0.9) break; shown.push(d); covered += Math.abs(d.delta); }
+            const pct = Math.round((Math.abs(diff) / r.avg) * 100);
+            const big = list.filter((t) => t.amount >= 0.1 * v).length;
+            const fromStatement = list.filter((t) => t.source === "statement").length;
+            return (
+              <details key={r.id + m.key} className="spike" id={`spike-${r.id}-${m.key}`}>
+                <summary>
+                  <span className={"spike-badge " + (diff > 0 ? "up" : "down")}>{diff > 0 ? "+" : "−"}{pct}%</span>
+                  <span className="spike-title">
+                    <b>{r.name}, {m.long}</b>
+                    <span className="txn-meta">{money(v).replace(/\.\d\d$/, "")} vs {money(r.avg).replace(/\.\d\d$/, "")} average ({diff > 0 ? "+" : "−"}{money(Math.abs(diff)).replace(/\.\d\d$/, "")})</span>
+                  </span>
+                  <span className="caret">▸</span>
+                </summary>
+                <div className="spike-body">
+                  <p>
+                    {r.name} was {money(v)} in {m.long}, {money(Math.abs(diff))} ({pct}%) {diff > 0 ? "above" : "below"} its six-month average of {money(r.avg)},
+                    {" "}across {list.length} purchase{list.length === 1 ? "" : "s"}{diff > 0 && big ? `, ${big} of which ${big === 1 ? "was" : "were"} each over 10% of the month's total` : ""}.
+                    {shown.length > 0 && ` ${diff > 0 ? "Most of the increase came from" : "Most of the drop came from"} ${shown.map((d) => d.name).join(", ").replace(/, ([^,]*)$/, " and $1")}.`}
+                  </p>
+                  {shown.length > 0 && (
+                    <div className="spike-drivers">
+                      {shown.map((d) => (
+                        <div key={d.name} className="acct">
+                          <span>{d.name}<span className="acct-note" style={{ display: "block" }}>{d.count ? `${d.count} purchase${d.count > 1 ? "s" : ""} this month, ` : "None this month, "}usually {money(d.avg).replace(/\.\d\d$/, "")} a month</span></span>
+                          <span className="acct-bal">{d.delta > 0 ? "+" : "−"}{money(Math.abs(d.delta)).replace(/\.\d\d$/, "")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {list.length > 0 && <>
+                    <div className="drill-label">Every purchase in {r.name}, {m.long}</div>
+                    {list.map((t) => (
+                      <div key={t.id} className="acct">
+                        <span>{t.merchant || "Unknown"}<span className="acct-note" style={{ display: "block" }}>{shortDate(t.posted_date)}{acctText(t) ? `, ${acctText(t)}` : ""}{t.source === "statement" ? ", from statement" : ""}</span></span>
+                        <span className="acct-bal">{money(Number(t.amount))}</span>
+                      </div>
+                    ))}
+                  </>}
+                  {fromStatement > 0 && <p className="txn-meta">{fromStatement} of these came from an uploaded statement because the bank's feed was behind.</p>}
+                </div>
+              </details>
+            );
+          };
+          return (
+            <section className="section">
+              <div className="section-head">
+                <h2 className="section-title">What stood out</h2>
+                <span className="section-note">Over 15% and $200 off the average</span>
+              </div>
+              {spikes.length === 0 && <p className="status">Every category stayed within 15% of its average.</p>}
+              {up.length > 0 && <><div className="drill-label">Higher than usual</div><div className="sheet">{up.map(explain)}</div></>}
+              {down.length > 0 && <><div className="drill-label" style={{ marginTop: 14 }}>Lower than usual</div><div className="sheet">{down.map(explain)}</div></>}
+            </section>
+          );
+        })()}
       </>
     );
   })();

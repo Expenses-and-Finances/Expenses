@@ -211,3 +211,29 @@ button { cursor: pointer; }
 .spark i { display: block; width: 6px; background: #c5ccc3; border-radius: 1.5px 1.5px 0 0; }
 .spark i.on { background: var(--green); }
 .trend-months { margin-top: 0; }
+
+/* Trends: one small chart per category */
+.smalls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.small { background: var(--sheet); border-radius: 12px; padding: 9px 10px 4px; min-width: 0; }
+.small-head { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; font-weight: 500; }
+.small-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.small-head b { font-weight: 600; color: var(--muted); }
+.small-axis { font-size: 8px; fill: var(--muted); font-family: var(--body); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: 0; margin-right: 4px; }
+.dot.up { background: var(--brass); }
+.dot.down { background: var(--green); }
+
+/* What stood out */
+.spike { border-bottom: 1px solid var(--line); }
+.spike:last-child { border-bottom: 0; }
+.spike summary { display: flex; align-items: center; gap: 10px; padding: 10px 0; cursor: pointer; list-style: none; }
+.spike summary::-webkit-details-marker { display: none; }
+.spike[open] .caret { transform: rotate(90deg); }
+.spike-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.spike-badge { flex: none; min-width: 52px; text-align: center; font-size: 12px; font-weight: 650; border-radius: 999px; padding: 3px 8px; }
+.spike-badge.up { background: var(--brass-soft); color: #7a5f12; }
+.spike-badge.down { background: var(--green-soft); color: var(--green); }
+.spike-body { padding: 0 0 12px 62px; font-size: 14px; }
+.spike-body p { margin: 0 0 8px; }
+.spike-drivers { background: var(--paper); border-radius: 10px; padding: 2px 10px; margin-bottom: 6px; }
+@media (max-width: 420px) { .spike-body { padding-left: 0; } }
