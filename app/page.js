@@ -216,12 +216,13 @@ function estimateLoan(account, txns) {
 
 const monthsOld = (d) => (d ? (Date.now() - new Date(d)) / (30.44 * 864e5) : 0);
 
-// Rent paid near the end of a month (day 25 or later) counts for the next month.
+// Rent paid near the end of a month (day 25 or later) counts for the next month, unless a month was set by hand.
+// Returned payments come in as negative amounts and cancel out the payment they reverse.
 function rentMonths(payments, months = 12) {
   const byMonth = {};
   for (const t of payments) {
     const [y, m, d] = t.posted_date.split("-").map(Number);
-    const key = d >= 25 ? (m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`) : `${y}-${String(m).padStart(2, "0")}`;
+    const key = t.rent_month || (d >= 25 ? (m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`) : `${y}-${String(m).padStart(2, "0")}`);
     (byMonth[key] = byMonth[key] || []).push(t);
   }
   const now = new Date();
@@ -275,7 +276,7 @@ function CatIcon({ name }) {
 
 // The database returns at most 1,000 rows per request, so read transactions in pages.
 async function loadAllTransactions() {
-  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id, shared";
+  const cols = "id, posted_date, merchant, amount, pending, plaid_category, plaid_category_detailed, account_id, category_id, is_transfer, auto_transfer, property_id, auto_property_id, shared, stale, rent_month";
   let all = [];
   for (let from = 0; from < 50000; from += 1000) {
     const { data, error } = await supabase.from("transactions").select(cols)
@@ -284,7 +285,8 @@ async function loadAllTransactions() {
     all = all.concat(data);
     if (data.length < 1000) break;
   }
-  return { data: all, error: null };
+  // Copies the bank no longer lists (found by the duplicate check) are left out.
+  return { data: all.filter((t) => !t.stale), error: null };
 }
 
 // Every connected account, grouped by bank, with last 4 digits and the balance from the latest sync.
@@ -961,7 +963,7 @@ function Dashboard({ session }) {
 
           {(() => {
             if (!rentRule) return null;
-            const pays = liveTxns.filter(isRentPay);
+            const pays = liveTxns.filter((t) => rentRule.re.test(t.merchant || ""));
             return (
               <section className="section">
                 <div className="section-head">
@@ -971,10 +973,13 @@ function Dashboard({ session }) {
                 <div className="months">
                   {rentMonths(pays).reverse().map((m) => {
                     const total = m.items.reduce((s, t) => s + Number(t.amount), 0);
+                    const paid = total > 0.5;
+                    const returned = m.items.some((t) => Number(t.amount) < 0);
                     return (
-                      <div key={m.key} className={"month " + (m.items.length ? "paid" : "gap")} title={m.items.map((t) => `${t.posted_date}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}>
+                      <div key={m.key} className={"month " + (paid ? "paid" : "gap")} title={m.items.map((t) => `${t.posted_date} ${Number(t.amount) < 0 ? "returned " : ""}${money(Math.abs(t.amount))}${accounts[t.account_id]?.mask ? " ••" + accounts[t.account_id].mask : ""}`).join(", ")}>
                         <b>{m.label.replace(/ \d{4}$/, "")} <span className="count">’{m.label.slice(-2)}</span></b>
-                        <span className="m-amt">{m.items.length ? money(total).replace(/\.\d\d$/, "") : "Not found"}</span>
+                        <span className="m-amt">{paid ? money(total).replace(/\.\d\d$/, "") : m.items.length ? "Returned" : "Not found"}</span>
+                        {paid && returned && <span className="count">after a return</span>}
                       </div>
                     );
                   })}
