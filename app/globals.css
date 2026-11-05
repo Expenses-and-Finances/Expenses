@@ -240,3 +240,15 @@ button { cursor: pointer; }
 .more { margin-top: 10px; }
 .more > summary { cursor: pointer; list-style: none; font-size: 14px; padding: 4px 0 8px; display: inline-block; }
 .more > summary::-webkit-details-marker { display: none; }
+
+/* Loan payments */
+.loan { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.loan:last-child { border-bottom: 0; }
+.loan-head { font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.loan-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.lc { font-size: 11px; text-align: center; border-radius: 8px; padding: 4px 2px; background: var(--paper); color: var(--muted); white-space: nowrap; }
+.lc b { display: block; font-weight: 500; font-size: 10px; }
+.lc.paid { background: var(--green-soft); color: var(--green); font-weight: 600; }
+.lc.filled { background: transparent; border: 1px dashed #b7c9bd; color: var(--green); }
+.lc.due { background: var(--brass-soft); color: #7a5f12; }
+.lc.off { background: transparent; }

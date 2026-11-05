@@ -398,6 +398,7 @@ function Dashboard({ session }) {
   const [props, setProps] = useState([]);
   const [rules, setRules] = useState([]);
   const [crypto, setCrypto] = useState([]);
+  const [loans, setLoans] = useState([]);
   const [filterProp, setFilterProp] = useState(null); // null = all, "household", or a property id
   const [period, setPeriod] = useState("30d");
   const [filterCat, setFilterCat] = useState(null);
@@ -411,13 +412,14 @@ function Dashboard({ session }) {
   const [trendCat, setTrendCat] = useState(null); // category row opened in trends
 
   async function load() {
-    const [a, c, p, cr, r, t] = await Promise.all([
+    const [a, c, p, cr, r, t, ln] = await Promise.all([
       supabase.from("accounts").select("id, name, mask, responsibility, owner_override, plaid_item_id, property_id, owner_person, type, subtype, institution, current_balance, available_balance, balance_updated_at, is_manual, balance_note, apr, payment_amount, payment_pattern"),
       supabase.from("categories").select("id, name, plaid_codes, sort").order("sort"),
       supabase.from("properties").select("id, name, sort").order("sort"),
       supabase.from("crypto_holdings").select("symbol, quantity, last_price, last_value, price_updated_at").order("last_value", { ascending: false, nullsFirst: false }),
       supabase.from("rules").select("id, pattern, property_id, category_id, is_transfer, note, direction, label").order("created_at"),
       loadAllTransactions(),
+      supabase.from("loans").select("id, name, kind, match, amount, loan_institution, loan_mask, counts, property_id, since, until, sort").order("sort"),
     ]);
     if (t.error) return setMsg("Could not load transactions.");
     // owner_override (set by hand, e.g. Mariana's account connected through your Plaid) wins over the Plaid login's owner.
@@ -426,6 +428,7 @@ function Dashboard({ session }) {
     setProps(p.data || []);
     setCrypto(cr.data || []);
     setRules((r.data || []).map((x) => ({ ...x, re: likeToRegex(x.pattern) })));
+    setLoans((ln.data || []).map((x) => ({ ...x, re: new RegExp(x.match, "i"), amount: x.amount == null ? null : Number(x.amount) })));
     setTxns(t.data);
   }
 
@@ -456,8 +459,20 @@ function Dashboard({ session }) {
   const ruleFor = (t) => rules.find((r) =>
     (!r.direction || (r.direction === "in" ? t.amount < 0 : t.amount > 0)) && r.re.test(t.merchant || ""));
 
-  // Your manual choice wins, then a payee rule, then the automatic label from the bank sync.
-  const autoTransfer = (t) => ruleFor(t)?.is_transfer ?? t.auto_transfer;
+  // A monthly loan or mortgage payment going out of a bank account: same description and (for fixed loans) the same amount.
+  const loanMemo = new Map();
+  const loanOf = (t) => {
+    if (loanMemo.has(t.id)) return loanMemo.get(t.id);
+    const mo = t.posted_date.slice(0, 7);
+    const l = t.amount > 0 && accounts[t.account_id]?.type === "depository" ? loans.find((x) =>
+      x.re.test(t.merchant || "") && (x.amount == null || Math.abs(Number(t.amount) - x.amount) <= Math.max(1, x.amount * 0.02))
+      && (!x.since || mo >= x.since) && (!x.until || mo <= x.until)) || null : null;
+    loanMemo.set(t.id, l);
+    return l;
+  };
+
+  // Your manual choice wins, then a tracked loan payment (counts as spending), then a payee rule, then the bank's label.
+  const autoTransfer = (t) => { const l = loanOf(t); if (l && l.counts !== "none") return false; return ruleFor(t)?.is_transfer ?? t.auto_transfer; };
   const transfer = (t) => (t.is_transfer ?? autoTransfer(t)) === true;
   // Why a transaction is left out of the totals, in plain words.
   const whyNot = (t) => {
@@ -474,7 +489,9 @@ function Dashboard({ session }) {
   const byCode = {};
   for (const c of cats) for (const code of c.plaid_codes || []) byCode[code] = c;
   const other = cats.find((c) => c.name === "Other");
+  const loansCat = cats.find((c) => /loan/i.test(c.name));
   const autoCat = (t) => {
+    if (loansCat && loanOf(t)?.counts === "household") return loansCat;
     const rc = ruleFor(t)?.category_id;
     return (rc && cats.find((c) => c.id === rc)) || byCode[t.plaid_category_detailed] || byCode[t.plaid_category] || other;
   };
@@ -484,7 +501,8 @@ function Dashboard({ session }) {
   // "Household" is a real choice so a property item can be moved back to it.
   const householdId = props.find((p) => p.name === "Household")?.id;
   const autoProp = (t) => ruleFor(t)?.property_id || t.auto_property_id || accounts[t.account_id]?.property_id || inheritedProp[t.account_id] || null;
-  const rawProp = (t) => t.property_id || autoProp(t);
+  const loanProp = (t) => { const l = loanOf(t); return l?.counts === "property" ? l.property_id : null; };
+  const rawProp = (t) => t.property_id || loanProp(t) || autoProp(t);
   const propOf = (t) => { const p = rawProp(t); return p === householdId ? null : p; };
   const realProps = props.filter((p) => p.id !== householdId);
 
@@ -1272,6 +1290,76 @@ function Dashboard({ session }) {
             );
           })()}
 
+
+          {loans.length > 0 && (() => {
+            // Loan payments, month by month. A fixed payment the bank feed missed is filled in from the known amount.
+            const now = new Date();
+            const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+            const lm = [];
+            for (let i = 5; i >= 0; i--) {
+              const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+              lm.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, label: d.toLocaleString("en-US", { month: "short" }) });
+            }
+            const visible = (txns || []).filter((t) => !dupes.has(t.account_id));
+            const rowsL = loans.map((l) => {
+              const loanAcct = Object.values(accounts).filter((a) => a.type === "loan" && !dupes.has(a.id) && l.loan_mask && a.mask === l.loan_mask && (a.institution || "").startsWith(l.loan_institution || ""));
+              const loanIds = new Set(loanAcct.map((a) => a.id));
+              const paid = {}; // month -> { amount, days }
+              let first = null, lastDay = 1;
+              for (const t of visible) {
+                const fromBank = loanOf(t)?.id === l.id;
+                const fromLoan = loanIds.has(t.account_id) && t.amount < 0 && /payment/i.test(t.merchant || "") && !fromBank;
+                if (!fromBank && !fromLoan) continue;
+                const mo = t.posted_date.slice(0, 7);
+                const e = (paid[mo] = paid[mo] || { bank: 0, loan: 0 });
+                if (fromBank) e.bank += Number(t.amount); else e.loan += -Number(t.amount);
+                if (!first || mo < first) first = mo;
+                lastDay = Number(t.posted_date.slice(8, 10));
+              }
+              const cells = lm.map((m) => {
+                const e = paid[m.key];
+                const amt = e ? (e.bank || e.loan) : 0;
+                const inRange = (!l.since || m.key >= l.since) && (!l.until || m.key <= l.until);
+                if (!inRange) return { key: m.key, state: "off" };
+                if (amt > 0) return { key: m.key, state: "paid", amt };
+                if (l.amount != null && first && m.key >= first && m.key < cur) return { key: m.key, state: "filled", amt: l.amount };
+                if (m.key === cur && l.amount != null) return { key: m.key, state: "due", amt: l.amount };
+                return { key: m.key, state: "missing" };
+              });
+              const prop = props.find((p) => p.id === l.property_id)?.name;
+              const where = l.counts === "household" ? "Household" : l.counts === "property" ? (prop || "Property") : "Not counted yet";
+              return { l, cells, where };
+            });
+            const sumWhere = (pred) => rowsL.filter(pred).reduce((s, r) => s + r.cells.filter((c) => c.key < cur && (c.state === "paid" || c.state === "filled")).reduce((a, c) => a + c.amt, 0), 0) / (lm.length - 1);
+            return (
+              <section className="section">
+                <div className="section-head">
+                  <h2 className="section-title">Loan payments</h2>
+                  <span className="section-note">≈ filled in from the fixed amount</span>
+                </div>
+                <p className="txn-meta" style={{ margin: "0 0 8px" }}>
+                  About {money(sumWhere((r) => r.l.counts === "household")).replace(/\.\d\d$/, "")} a month in household loans and {money(sumWhere((r) => r.l.counts === "property")).replace(/\.\d\d$/, "")} in property mortgages and the home equity line.
+                </p>
+                <div className="sheet">
+                  {rowsL.map(({ l, cells, where }) => (
+                    <div key={l.id} className="loan">
+                      <div className="loan-head">
+                        <span>{l.name}<span className="acct-note" style={{ display: "block" }}>{where}{l.amount != null ? `, ${money(l.amount)} a month` : ", amount varies"}</span></span>
+                      </div>
+                      <div className="loan-cells">
+                        {cells.map((c, i) => (
+                          <span key={c.key} className={"lc " + c.state} title={`${lm[i].label}: ${c.state === "paid" ? "paid " + money(c.amt) : c.state === "filled" ? "not in the bank data, filled in at " + money(c.amt) : c.state === "due" ? "not paid yet this month" : c.state === "off" ? "before or after this loan" : "not found"}`}>
+                            <b>{lm[i].label}</b>
+                            {c.state === "paid" ? short$(c.amt) : c.state === "filled" ? "≈" + short$(c.amt) : c.state === "due" ? "Due" : c.state === "off" ? "" : "—"}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })()}
           <section className="section">
             <div className="section-head">
               <h2 className="section-title">Transactions</h2>
